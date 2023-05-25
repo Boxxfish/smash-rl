@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "smash-rl"
 version = "0.1.0"
-description = ""
+description = "Training an agent to play Smash Bros. "
 authors = ["Ben Giacalone <bensgiacalone@gmail.com>"]
 readme = "README.md"
 packages = [{include = "smash_rl"}]
