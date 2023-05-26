@@ -22,4 +22,5 @@ opt-level=3
 [dependencies]
 pyo3 = "0.18.3"
 rand = "0.8.5"
-bevy = {version="0.10.0", features = ["wayland"] }
+bevy = { version = "0.10.0", features = ["wayland"] }
+bevy_rapier2d = { version = "0.21.0", features = ["simd-nightly", "debug-render-2d"] }
