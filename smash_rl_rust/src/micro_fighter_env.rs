@@ -5,6 +5,11 @@ use pyo3::prelude::*;
 const FIXED_TIMESTEP: f32 = 1.0 / 60.0;
 const JUMP_VEL: f32 = 500.0;
 const AIR_VEL: f32 = 2.0;
+const CHAR_WIDTH: f32 = 20.0;
+const HIT_OFFSET: Vec2 = Vec2 {
+    x: CHAR_WIDTH / 2.0,
+    y: 0.0,
+};
 
 /// Stores all the plugins needed for human mode.
 pub struct HumanPlugin;
@@ -56,6 +61,9 @@ impl MicroFighterEnv {
                     handle_run,
                     handle_jump,
                     handle_fall,
+                    handle_light_attack_startup,
+                    handle_light_attack_hit,
+                    handle_light_attack_recovery,
                 )
                     .in_set(OnUpdate(AppState::Running)), // .in_schedule(CoreSchedule::FixedUpdate)
             )
@@ -70,7 +78,7 @@ impl Default for MicroFighterEnv {
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub enum HorizontalDir {
     Left,
     Right,
@@ -108,7 +116,7 @@ impl Default for CharBundle {
             rigidbody: RigidBody::Dynamic,
             vel: Velocity::default(),
             locked_axes: LockedAxes::ROTATION_LOCKED,
-            collider: Collider::cuboid(10.0, 30.0),
+            collider: Collider::cuboid(CHAR_WIDTH / 2.0, 30.0),
             transform: TransformBundle::from(Transform::from_xyz(-50.0, 0.0, 0.0)),
             character: Character {
                 dir: HorizontalDir::Right,
@@ -116,6 +124,43 @@ impl Default for CharBundle {
             },
             grav_scale: GravityScale(10.0),
             sensor: Sensor,
+        }
+    }
+}
+
+/// Denotes that the entity is a hitbox.
+#[derive(Component)]
+pub struct Hit;
+
+/// Bundle for hits.
+#[derive(Bundle)]
+pub struct HitBundle {
+    pub hit: Hit,
+    pub collider: Collider,
+    pub transform: TransformBundle,
+    pub active_events: ActiveEvents,
+}
+
+impl HitBundle {
+    fn new(size: u32, dist: u32, angle: u32, offset: Vec2, dir: HorizontalDir) -> Self {
+        let dir_mult = match dir {
+            HorizontalDir::Left => -1.0,
+            HorizontalDir::Right => 1.0,
+        };
+        let mut translation = Vec2::new(
+            (angle as f32).to_radians().cos() * dist as f32 / 2.0,
+            (angle as f32).to_radians().sin() * dist as f32 / 2.0 - (angle as f32).to_radians().cos() * size as f32 / 2.0,
+        ) + offset;
+        translation.x *= dir_mult;
+        Self {
+            hit: Hit,
+            collider: Collider::cuboid(dist as f32 / 2.0, size as f32 / 2.0),
+            transform: TransformBundle::from(Transform {
+                translation: translation.extend(0.0),
+                rotation: Quat::from_rotation_z((angle as f32 * dir_mult).to_radians()),
+                ..default()
+            }),
+            active_events: ActiveEvents::COLLISION_EVENTS,
         }
     }
 }
@@ -248,14 +293,14 @@ impl Default for CharAttrs {
             jump_height: 40,
             run_speed: 200,
             size: 30,
-            light_size: 3,
-            light_dist: 4,
+            light_size: 12,
+            light_dist: 12,
             light_angle: 20,
             light_startup: 0,
             light_recovery: 2,
             light_dmg: 2,
-            heavy_size: 3,
-            heavy_dist: 10,
+            heavy_size: 12,
+            heavy_dist: 20,
             heavy_angle: 20,
             heavy_startup: 4,
             heavy_recovery: 8,
@@ -320,7 +365,17 @@ pub struct ShieldState;
 #[derive(Component)]
 pub struct HitstunState;
 #[derive(Component)]
-pub struct LightAttackState;
+pub struct LightAttackStartupState {
+    pub frames_left: u32,
+}
+#[derive(Component)]
+pub struct LightAttackHitState {
+    pub frames_left: u32,
+}
+#[derive(Component)]
+pub struct LightAttackRecoveryState {
+    pub frames_left: u32,
+}
 #[derive(Component)]
 pub struct HeavyAttackState;
 #[derive(Component)]
@@ -345,6 +400,13 @@ fn handle_idle(
         } else if char_inpt.right {
             character.dir = HorizontalDir::Right;
             commands.entity(e).insert(RunState).remove::<IdleState>();
+        } else if char_inpt.light {
+            commands
+                .entity(e)
+                .insert(LightAttackStartupState {
+                    frames_left: char_attrs.light_startup,
+                })
+                .remove::<IdleState>();
         }
     }
 }
@@ -434,5 +496,70 @@ fn handle_fall(
         } else if char_inpt.right {
             vel.linvel.x += AIR_VEL;
         }
+    }
+}
+
+fn handle_light_attack_startup(
+    mut char_query: Query<(Entity, &CharAttrs, &Character, &mut LightAttackStartupState)>,
+    mut commands: Commands,
+) {
+    for (e, char_attrs, character, mut startup_state) in char_query.iter_mut() {
+        if startup_state.frames_left == 0 {
+            let hit = commands
+                .spawn(HitBundle::new(
+                    char_attrs.light_size,
+                    char_attrs.light_dist,
+                    char_attrs.light_angle,
+                    HIT_OFFSET,
+                    character.dir,
+                ))
+                .id();
+            commands.entity(e).add_child(hit);
+
+            commands
+                .entity(e)
+                .insert(LightAttackHitState { frames_left: 2 })
+                .remove::<LightAttackStartupState>();
+        }
+        startup_state.frames_left = startup_state.frames_left.saturating_sub(1);
+    }
+}
+
+fn handle_light_attack_hit(
+    mut char_query: Query<(Entity, &CharAttrs, &mut LightAttackHitState)>,
+    hit_query: Query<(Entity, &Parent), With<Hit>>,
+    mut commands: Commands,
+) {
+    for (e, char_attrs, mut hit_state) in char_query.iter_mut() {
+        if hit_state.frames_left == 0 {
+            for (hit_e, hit_parent) in hit_query.iter() {
+                if hit_parent.get() == e {
+                    commands.entity(hit_e).despawn();
+                }
+            }
+
+            commands
+                .entity(e)
+                .insert(LightAttackRecoveryState {
+                    frames_left: char_attrs.light_recovery,
+                })
+                .remove::<LightAttackHitState>();
+        }
+        hit_state.frames_left = hit_state.frames_left.saturating_sub(1);
+    }
+}
+
+fn handle_light_attack_recovery(
+    mut char_query: Query<(Entity, &mut LightAttackRecoveryState)>,
+    mut commands: Commands,
+) {
+    for (e, mut recovery_state) in char_query.iter_mut() {
+        if recovery_state.frames_left == 0 {
+            commands
+                .entity(e)
+                .insert(IdleState)
+                .remove::<LightAttackRecoveryState>();
+        }
+        recovery_state.frames_left = recovery_state.frames_left.saturating_sub(1);
     }
 }
