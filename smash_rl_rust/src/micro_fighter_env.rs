@@ -62,10 +62,28 @@ impl MicroFighterEnv {
                     handle_jump,
                     handle_fall,
                     handle_light_attack_startup,
+                    handle_light_attack_hit_start,
                     handle_light_attack_hit,
+                    handle_light_attack_hit_end,
                     handle_light_attack_recovery,
+                    update_timer,
                 )
                     .in_set(OnUpdate(AppState::Running)), // .in_schedule(CoreSchedule::FixedUpdate)
+            )
+            .add_systems(
+                (
+                    handle_move_state::<IdleState>,
+                    handle_move_state::<RunState>,
+                    handle_move_state::<JumpState>,
+                    handle_move_state::<FallState>,
+                    handle_move_state::<LightAttackStartupState>,
+                    handle_move_state::<LightAttackHitState>,
+                    handle_move_state::<LightAttackRecoveryState>,
+                    handle_move_state::<GrabState>,
+                    handle_move_state::<ShieldState>,
+                    handle_move_state::<HitstunState>,
+                )
+                    .in_set(OnUpdate(AppState::Running)),
             )
             // .insert_resource(FixedTime::new_from_secs(FIXED_TIMESTEP))
             .run();
@@ -95,6 +113,7 @@ pub struct Character {
 #[derive(Bundle)]
 pub struct CharBundle {
     pub state: IdleState,
+    pub state_timer: StateTimer,
     pub attrs: CharAttrs,
     pub input: CharInput,
     pub character: Character,
@@ -124,6 +143,7 @@ impl Default for CharBundle {
             },
             grav_scale: GravityScale(10.0),
             sensor: Sensor,
+            state_timer: StateTimer { frames: 0 },
         }
     }
 }
@@ -149,7 +169,8 @@ impl HitBundle {
         };
         let mut translation = Vec2::new(
             (angle as f32).to_radians().cos() * dist as f32 / 2.0,
-            (angle as f32).to_radians().sin() * dist as f32 / 2.0 - (angle as f32).to_radians().cos() * size as f32 / 2.0,
+            (angle as f32).to_radians().sin() * dist as f32 / 2.0
+                - (angle as f32).to_radians().cos() * size as f32 / 2.0,
         ) + offset;
         translation.x *= dir_mult;
         Self {
@@ -296,7 +317,7 @@ impl Default for CharAttrs {
             light_size: 12,
             light_dist: 12,
             light_angle: 20,
-            light_startup: 0,
+            light_startup: 1,
             light_recovery: 2,
             light_dmg: 2,
             heavy_size: 12,
@@ -355,9 +376,7 @@ pub struct IdleState;
 pub struct RunState;
 
 #[derive(Component)]
-pub struct JumpState {
-    pub frames_left: u32,
-}
+pub struct JumpState;
 #[derive(Component)]
 pub struct FallState;
 #[derive(Component)]
@@ -365,21 +384,36 @@ pub struct ShieldState;
 #[derive(Component)]
 pub struct HitstunState;
 #[derive(Component)]
-pub struct LightAttackStartupState {
-    pub frames_left: u32,
-}
+pub struct LightAttackStartupState;
 #[derive(Component)]
-pub struct LightAttackHitState {
-    pub frames_left: u32,
-}
+pub struct LightAttackHitState;
 #[derive(Component)]
-pub struct LightAttackRecoveryState {
-    pub frames_left: u32,
-}
+pub struct LightAttackRecoveryState;
 #[derive(Component)]
 pub struct HeavyAttackState;
 #[derive(Component)]
 pub struct GrabState;
+
+/// Holds the current frame since this state started.
+#[derive(Component)]
+pub struct StateTimer {
+    pub frames: u32,
+}
+
+/// Treats the component as a move state.
+/// Clears the state timer whenever the component is added.
+fn handle_move_state<T: Component>(mut timer_query: Query<&mut StateTimer, Added<T>>) {
+    for mut timer in timer_query.iter_mut() {
+        timer.frames = 0;
+    }
+}
+
+/// Increases the frame count every frame.
+fn update_timer(mut timer_query: Query<&mut StateTimer>) {
+    for mut timer in timer_query.iter_mut() {
+        timer.frames += 1;
+    }
+}
 
 fn handle_idle(
     mut char_query: Query<(Entity, &CharInput, &CharAttrs, &mut Character), With<IdleState>>,
@@ -387,13 +421,7 @@ fn handle_idle(
 ) {
     for (e, char_inpt, char_attrs, mut character) in char_query.iter_mut() {
         if char_inpt.jump {
-            commands
-                .entity(e)
-                .insert(JumpState {
-                    frames_left: ((char_attrs.jump_height as f32 / JUMP_VEL) / FIXED_TIMESTEP)
-                        as u32,
-                })
-                .remove::<IdleState>();
+            commands.entity(e).insert(JumpState).remove::<IdleState>();
         } else if char_inpt.left {
             character.dir = HorizontalDir::Left;
             commands.entity(e).insert(RunState).remove::<IdleState>();
@@ -403,9 +431,7 @@ fn handle_idle(
         } else if char_inpt.light {
             commands
                 .entity(e)
-                .insert(LightAttackStartupState {
-                    frames_left: char_attrs.light_startup,
-                })
+                .insert(LightAttackStartupState)
                 .remove::<IdleState>();
         }
     }
@@ -428,13 +454,7 @@ fn handle_run(
         if char_inpt.jump {
             commands
                 .entity(e)
-                .insert((
-                    JumpState {
-                        frames_left: ((char_attrs.jump_height as f32 / JUMP_VEL) / FIXED_TIMESTEP)
-                            as u32,
-                    },
-                    GravityScale(0.0),
-                ))
+                .insert((JumpState, GravityScale(0.0)))
                 .remove::<RunState>();
             if char_inpt.left {
                 vel.linvel.x = -(char_attrs.run_speed as f32) / 2.0;
@@ -451,19 +471,15 @@ fn handle_run(
 }
 
 fn handle_jump(
-    mut char_query: Query<(
-        Entity,
-        &CharInput,
-        &CharAttrs,
-        &mut Velocity,
-        &mut JumpState,
-    )>,
+    mut char_query: Query<
+        (Entity, &CharInput, &CharAttrs, &mut Velocity, &StateTimer),
+        With<JumpState>,
+    >,
     mut commands: Commands,
 ) {
-    for (e, char_inpt, char_attrs, mut vel, mut jump_state) in char_query.iter_mut() {
+    for (e, char_inpt, char_attrs, mut vel, timer) in char_query.iter_mut() {
         vel.linvel.y = JUMP_VEL;
-        jump_state.frames_left -= 1;
-        if jump_state.frames_left == 0 {
+        if timer.frames == ((char_attrs.jump_height as f32 / JUMP_VEL) / FIXED_TIMESTEP) as u32 {
             commands
                 .entity(e)
                 .insert((FallState, GravityScale(10.0)))
@@ -478,11 +494,11 @@ fn handle_jump(
 }
 
 fn handle_fall(
-    mut char_query: Query<(Entity, &CharInput, &mut Velocity, &Character, &FallState)>,
+    mut char_query: Query<(Entity, &CharInput, &mut Velocity, &Character), With<FallState>>,
     mut commands: Commands,
     mut ev_collision: EventReader<CollisionEvent>,
 ) {
-    for (e, char_inpt, mut vel, character, _) in char_query.iter_mut() {
+    for (e, char_inpt, mut vel, character) in char_query.iter_mut() {
         for ev in ev_collision.iter() {
             if let CollisionEvent::Started(e1, e2, _) = ev {
                 let floor_e = character.floor_collider.unwrap();
@@ -500,11 +516,11 @@ fn handle_fall(
 }
 
 fn handle_light_attack_startup(
-    mut char_query: Query<(Entity, &CharAttrs, &Character, &mut LightAttackStartupState)>,
+    char_query: Query<(Entity, &CharAttrs, &Character, &StateTimer), With<LightAttackStartupState>>,
     mut commands: Commands,
 ) {
-    for (e, char_attrs, character, mut startup_state) in char_query.iter_mut() {
-        if startup_state.frames_left == 0 {
+    for (e, char_attrs, character, timer) in char_query.iter() {
+        if timer.frames == char_attrs.light_startup {
             let hit = commands
                 .spawn(HitBundle::new(
                     char_attrs.light_size,
@@ -518,48 +534,68 @@ fn handle_light_attack_startup(
 
             commands
                 .entity(e)
-                .insert(LightAttackHitState { frames_left: 2 })
+                .insert(LightAttackHitState)
                 .remove::<LightAttackStartupState>();
         }
-        startup_state.frames_left = startup_state.frames_left.saturating_sub(1);
+    }
+}
+
+fn handle_light_attack_hit_start(
+    char_query: Query<(Entity, &CharAttrs, &Character), Added<LightAttackHitState>>,
+    mut commands: Commands,
+) {
+    for (e, char_attrs, character) in char_query.iter() {
+        let hit = commands
+            .spawn(HitBundle::new(
+                char_attrs.light_size,
+                char_attrs.light_dist,
+                char_attrs.light_angle,
+                HIT_OFFSET,
+                character.dir,
+            ))
+            .id();
+        commands.entity(e).add_child(hit);
     }
 }
 
 fn handle_light_attack_hit(
-    mut char_query: Query<(Entity, &CharAttrs, &mut LightAttackHitState)>,
+    char_query: Query<(Entity, &CharAttrs, &StateTimer), With<LightAttackHitState>>,
+    mut commands: Commands,
+) {
+    for (e, char_attrs, timer) in char_query.iter() {
+        if timer.frames == 4 {
+            commands
+                .entity(e)
+                .insert(LightAttackRecoveryState)
+                .remove::<LightAttackHitState>();
+        }
+    }
+}
+
+fn handle_light_attack_hit_end(
+    mut rem_query: RemovedComponents<LightAttackHitState>,
     hit_query: Query<(Entity, &Parent), With<Hit>>,
     mut commands: Commands,
 ) {
-    for (e, char_attrs, mut hit_state) in char_query.iter_mut() {
-        if hit_state.frames_left == 0 {
-            for (hit_e, hit_parent) in hit_query.iter() {
-                if hit_parent.get() == e {
-                    commands.entity(hit_e).despawn();
-                }
+    for e in rem_query.iter() {
+        for (hit_e, hit_parent) in hit_query.iter() {
+            if hit_parent.get() == e {
+                commands.entity(hit_e).despawn();
             }
-
-            commands
-                .entity(e)
-                .insert(LightAttackRecoveryState {
-                    frames_left: char_attrs.light_recovery,
-                })
-                .remove::<LightAttackHitState>();
         }
-        hit_state.frames_left = hit_state.frames_left.saturating_sub(1);
     }
 }
 
 fn handle_light_attack_recovery(
-    mut char_query: Query<(Entity, &mut LightAttackRecoveryState)>,
+    char_query: Query<(Entity, &CharAttrs, &StateTimer), With<LightAttackRecoveryState>>,
     mut commands: Commands,
 ) {
-    for (e, mut recovery_state) in char_query.iter_mut() {
-        if recovery_state.frames_left == 0 {
+    for (e, char_attrs, timer) in char_query.iter() {
+        if timer.frames == char_attrs.light_recovery {
             commands
                 .entity(e)
                 .insert(IdleState)
                 .remove::<LightAttackRecoveryState>();
         }
-        recovery_state.frames_left = recovery_state.frames_left.saturating_sub(1);
     }
 }
