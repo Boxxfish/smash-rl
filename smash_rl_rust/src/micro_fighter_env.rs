@@ -141,7 +141,19 @@ fn setup(mut commands: Commands, mut app_state: ResMut<NextState<AppState>>) {
         .spawn((Player::default(), p_bundle))
         .add_child(p_floor_collider);
     // Bot
-    commands.spawn((Bot, CharBundle::default()));
+    let b_floor_collider = commands
+        .spawn((
+            Collider::cuboid(8.0, 4.0),
+            TransformBundle::from(Transform::from_xyz(0.0, -30.0, 0.0)),
+            ActiveEvents::COLLISION_EVENTS,
+        ))
+        .id();
+    let mut b_bundle = CharBundle {
+        transform: TransformBundle::from(Transform::from_xyz(50.0, 0.0, 0.0)),
+        ..default()
+    };
+    b_bundle.character.floor_collider = Some(b_floor_collider);
+    commands.spawn((Bot, b_bundle)).add_child(b_floor_collider);
     app_state.set(AppState::Running);
 }
 
@@ -354,10 +366,13 @@ fn handle_run(
         if char_inpt.jump {
             commands
                 .entity(e)
-                .insert((JumpState {
-                    frames_left: ((char_attrs.jump_height as f32 / JUMP_VEL) / FIXED_TIMESTEP)
-                        as u32,
-                }, GravityScale(0.0)))
+                .insert((
+                    JumpState {
+                        frames_left: ((char_attrs.jump_height as f32 / JUMP_VEL) / FIXED_TIMESTEP)
+                            as u32,
+                    },
+                    GravityScale(0.0),
+                ))
                 .remove::<RunState>();
             if char_inpt.left {
                 vel.linvel.x = -(char_attrs.run_speed as f32) / 2.0;
@@ -387,7 +402,10 @@ fn handle_jump(
         vel.linvel.y = JUMP_VEL;
         jump_state.frames_left -= 1;
         if jump_state.frames_left == 0 {
-            commands.entity(e).insert((FallState, GravityScale(10.0))).remove::<JumpState>();
+            commands
+                .entity(e)
+                .insert((FallState, GravityScale(10.0)))
+                .remove::<JumpState>();
         }
         if char_inpt.left {
             vel.linvel.x += -AIR_VEL;
