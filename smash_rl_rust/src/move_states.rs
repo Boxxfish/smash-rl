@@ -201,17 +201,6 @@ fn handle_light_attack_startup(
 ) {
     for (e, char_attrs, character, timer) in char_query.iter() {
         if timer.frames == char_attrs.light_startup {
-            let hit = commands
-                .spawn(HitBundle::new(
-                    char_attrs.light_size,
-                    char_attrs.light_dist,
-                    char_attrs.light_angle,
-                    HIT_OFFSET,
-                    character.dir,
-                ))
-                .id();
-            commands.entity(e).add_child(hit);
-
             commands
                 .entity(e)
                 .insert(LightAttackHitState)
@@ -227,6 +216,7 @@ fn handle_light_attack_hit_start(
     for (e, char_attrs, character) in char_query.iter() {
         let hit = commands
             .spawn(HitBundle::new(
+                char_attrs.light_dmg,
                 char_attrs.light_size,
                 char_attrs.light_dist,
                 char_attrs.light_angle,
