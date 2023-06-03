@@ -29,6 +29,11 @@ impl Plugin for MoveStatesPlugin {
                 handle_light_attack_hit,
                 handle_light_attack_hit_end,
                 handle_light_attack_recovery,
+                handle_heavy_attack_startup,
+                handle_heavy_attack_hit_start,
+                handle_heavy_attack_hit,
+                handle_heavy_attack_hit_end,
+                handle_heavy_attack_recovery,
                 update_timer,
             )
                 .in_set(OnUpdate(AppState::Running)),
@@ -42,6 +47,9 @@ impl Plugin for MoveStatesPlugin {
                 handle_move_state::<LightAttackStartupState>,
                 handle_move_state::<LightAttackHitState>,
                 handle_move_state::<LightAttackRecoveryState>,
+                handle_move_state::<HeavyAttackStartupState>,
+                handle_move_state::<HeavyAttackHitState>,
+                handle_move_state::<HeavyAttackRecoveryState>,
                 handle_move_state::<GrabState>,
                 handle_move_state::<ShieldState>,
                 handle_move_state::<HitstunState>,
@@ -70,7 +78,11 @@ pub struct LightAttackHitState;
 #[derive(Component)]
 pub struct LightAttackRecoveryState;
 #[derive(Component)]
-pub struct HeavyAttackState;
+pub struct HeavyAttackStartupState;
+#[derive(Component)]
+pub struct HeavyAttackHitState;
+#[derive(Component)]
+pub struct HeavyAttackRecoveryState;
 #[derive(Component)]
 pub struct GrabState;
 
@@ -96,10 +108,10 @@ fn update_timer(mut timer_query: Query<&mut StateTimer>) {
 }
 
 fn handle_idle(
-    mut char_query: Query<(Entity, &CharInput, &CharAttrs, &mut Character), With<IdleState>>,
+    mut char_query: Query<(Entity, &CharInput, &mut Character), With<IdleState>>,
     mut commands: Commands,
 ) {
-    for (e, char_inpt, char_attrs, mut character) in char_query.iter_mut() {
+    for (e, char_inpt, mut character) in char_query.iter_mut() {
         if char_inpt.jump {
             commands.entity(e).insert(JumpState).remove::<IdleState>();
         } else if char_inpt.left {
@@ -112,6 +124,11 @@ fn handle_idle(
             commands
                 .entity(e)
                 .insert(LightAttackStartupState)
+                .remove::<IdleState>();
+        } else if char_inpt.heavy {
+            commands
+                .entity(e)
+                .insert(HeavyAttackStartupState)
                 .remove::<IdleState>();
         }
     }
@@ -146,6 +163,11 @@ fn handle_run(
         {
             vel.linvel = Vec2::new(0.0, 0.0);
             commands.entity(e).insert(IdleState).remove::<RunState>();
+        } else if char_inpt.heavy {
+            commands
+                .entity(e)
+                .insert(HeavyAttackStartupState)
+                .remove::<RunState>();
         }
     }
 }
@@ -196,10 +218,10 @@ fn handle_fall(
 }
 
 fn handle_light_attack_startup(
-    char_query: Query<(Entity, &CharAttrs, &Character, &StateTimer), With<LightAttackStartupState>>,
+    char_query: Query<(Entity, &CharAttrs, &StateTimer), With<LightAttackStartupState>>,
     mut commands: Commands,
 ) {
-    for (e, char_attrs, character, timer) in char_query.iter() {
+    for (e, char_attrs, timer) in char_query.iter() {
         if timer.frames == char_attrs.light_startup {
             commands
                 .entity(e)
@@ -229,10 +251,10 @@ fn handle_light_attack_hit_start(
 }
 
 fn handle_light_attack_hit(
-    char_query: Query<(Entity, &CharAttrs, &StateTimer), With<LightAttackHitState>>,
+    char_query: Query<(Entity, &StateTimer), With<LightAttackHitState>>,
     mut commands: Commands,
 ) {
-    for (e, char_attrs, timer) in char_query.iter() {
+    for (e, timer) in char_query.iter() {
         if timer.frames == 4 {
             commands
                 .entity(e)
@@ -266,6 +288,83 @@ fn handle_light_attack_recovery(
                 .entity(e)
                 .insert(IdleState)
                 .remove::<LightAttackRecoveryState>();
+        }
+    }
+}
+
+
+
+fn handle_heavy_attack_startup(
+    char_query: Query<(Entity, &CharAttrs, &StateTimer), With<HeavyAttackStartupState>>,
+    mut commands: Commands,
+) {
+    for (e, char_attrs, timer) in char_query.iter() {
+        if timer.frames == char_attrs.heavy_startup {
+            commands
+                .entity(e)
+                .insert(HeavyAttackHitState)
+                .remove::<HeavyAttackStartupState>();
+        }
+    }
+}
+
+fn handle_heavy_attack_hit_start(
+    char_query: Query<(Entity, &CharAttrs, &Character), Added<HeavyAttackHitState>>,
+    mut commands: Commands,
+) {
+    for (e, char_attrs, character) in char_query.iter() {
+        let hit = commands
+            .spawn(HitBundle::new(
+                char_attrs.heavy_dmg,
+                char_attrs.heavy_size,
+                char_attrs.heavy_dist,
+                char_attrs.heavy_angle,
+                HIT_OFFSET,
+                character.dir,
+            ))
+            .id();
+        commands.entity(e).add_child(hit);
+    }
+}
+
+fn handle_heavy_attack_hit(
+    char_query: Query<(Entity, &StateTimer), With<HeavyAttackHitState>>,
+    mut commands: Commands,
+) {
+    for (e, timer) in char_query.iter() {
+        if timer.frames == 4 {
+            commands
+                .entity(e)
+                .insert(HeavyAttackRecoveryState)
+                .remove::<HeavyAttackHitState>();
+        }
+    }
+}
+
+fn handle_heavy_attack_hit_end(
+    mut rem_query: RemovedComponents<HeavyAttackHitState>,
+    hit_query: Query<(Entity, &Parent), With<Hit>>,
+    mut commands: Commands,
+) {
+    for e in rem_query.iter() {
+        for (hit_e, hit_parent) in hit_query.iter() {
+            if hit_parent.get() == e {
+                commands.entity(hit_e).despawn();
+            }
+        }
+    }
+}
+
+fn handle_heavy_attack_recovery(
+    char_query: Query<(Entity, &CharAttrs, &StateTimer), With<HeavyAttackRecoveryState>>,
+    mut commands: Commands,
+) {
+    for (e, char_attrs, timer) in char_query.iter() {
+        if timer.frames == char_attrs.heavy_recovery {
+            commands
+                .entity(e)
+                .insert(IdleState)
+                .remove::<HeavyAttackRecoveryState>();
         }
     }
 }

@@ -200,10 +200,10 @@ fn player_input(keys: Res<Input<KeyCode>>, mut player_query: Query<(&mut CharInp
     }
 
     if keys.just_pressed(KeyCode::Left) {
-        player.left_pressed = 4;
+        player.left_pressed = 8;
     }
     if keys.just_pressed(KeyCode::Right) {
-        player.right_pressed = 4;
+        player.right_pressed = 8;
     }
     let can_heavy =
         (player.left_pressed > 0 && hold_left) || (player.right_pressed > 0 && hold_right);
