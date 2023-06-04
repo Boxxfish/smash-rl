@@ -165,6 +165,7 @@ fn handle_run(
             vel.linvel = Vec2::new(0.0, 0.0);
             commands.entity(e).insert(IdleState).remove::<RunState>();
         } else if char_inpt.heavy {
+            vel.linvel = Vec2::new(0.0, 0.0);
             commands
                 .entity(e)
                 .insert(HeavyAttackStartupState)
