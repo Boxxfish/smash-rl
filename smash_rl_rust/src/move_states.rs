@@ -35,6 +35,14 @@ impl Plugin for MoveStatesPlugin {
                 handle_heavy_attack_hit,
                 handle_heavy_attack_hit_end,
                 handle_heavy_attack_recovery,
+            )
+                .in_set(OnUpdate(AppState::Running)),
+        )
+        .add_systems(
+            (
+                handle_shield_start,
+                handle_shield,
+                handle_shield_end,
                 update_timer,
             )
                 .in_set(OnUpdate(AppState::Running)),
@@ -130,6 +138,12 @@ fn handle_idle(
             commands
                 .entity(e)
                 .insert(HeavyAttackStartupState)
+                .remove::<IdleState>();
+        }
+        else if char_inpt.shield {
+            commands
+                .entity(e)
+                .insert(ShieldState)
                 .remove::<IdleState>();
         }
     }
@@ -370,5 +384,32 @@ fn handle_heavy_attack_recovery(
                 .insert(IdleState)
                 .remove::<HeavyAttackRecoveryState>();
         }
+    }
+}
+
+fn handle_shield_start(mut char_query: Query<&mut Character, Added<ShieldState>>) {
+    for mut character in char_query.iter_mut() {
+        character.shielding = true;
+    }
+}
+
+fn handle_shield(
+    char_query: Query<(Entity, &CharInput), With<ShieldState>>,
+    mut commands: Commands,
+) {
+    for (e, char_inpt) in char_query.iter() {
+        if !char_inpt.shield {
+            commands.entity(e).insert(IdleState).remove::<ShieldState>();
+        }
+    }
+}
+
+fn handle_shield_end(
+    mut rem_query: RemovedComponents<ShieldState>,
+    mut char_query: Query<&mut Character>,
+) {
+    for e in rem_query.iter() {
+        let mut character = char_query.get_mut(e).unwrap();
+        character.shielding = false;
     }
 }

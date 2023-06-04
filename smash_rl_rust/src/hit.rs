@@ -109,18 +109,20 @@ fn compute_hit_interactions(
                 continue;
             }
 
-            // Apply the appropriate amount of impulse
-            character.damage += hit.damage;
-            let knockback =
-                ((character.damage as f32) / 10.0) + (character.damage * hit.damage) as f32 / 20.0;
-            let impulse = hit.direction * knockback;
-            commands
-                .get_entity(char_e)
-                .unwrap()
-                .insert(ExternalImpulse {
-                    impulse,
-                    ..default()
-                });
+            if !character.shielding {
+                // Apply the appropriate amount of impulse
+                character.damage += hit.damage;
+                let knockback = ((character.damage as f32) / 10.0)
+                    + (character.damage * hit.damage) as f32 / 20.0;
+                let impulse = hit.direction * knockback;
+                commands
+                    .get_entity(char_e)
+                    .unwrap()
+                    .insert(ExternalImpulse {
+                        impulse,
+                        ..default()
+                    });
+            }
 
             // Add character to hit's hit list
             hit.chars_hit.push(char_e);

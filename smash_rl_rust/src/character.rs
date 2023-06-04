@@ -29,6 +29,7 @@ pub struct Character {
     pub dir: HorizontalDir,
     pub damage: u32,
     pub floor_collider: Option<Entity>,
+    pub shielding: bool,
 }
 
 /// Components for characters.
@@ -63,6 +64,7 @@ impl Default for CharBundle {
                 dir: HorizontalDir::Right,
                 floor_collider: None,
                 damage: 0,
+                shielding: false,
             },
             grav_scale: GravityScale(10.0),
             sensor: Sensor,
@@ -211,7 +213,7 @@ fn player_input(keys: Res<Input<KeyCode>>, mut player_query: Query<(&mut CharInp
     player.right_pressed = player.right_pressed.saturating_sub(1);
 
     player_input.jump = keys.just_pressed(KeyCode::Up);
-    player_input.shield = keys.just_pressed(KeyCode::S);
+    player_input.shield = keys.pressed(KeyCode::S);
     player_input.grab = keys.just_pressed(KeyCode::Z);
     player_input.light = keys.just_pressed(KeyCode::X) && !can_heavy;
     player_input.heavy = keys.just_pressed(KeyCode::X) && can_heavy;
