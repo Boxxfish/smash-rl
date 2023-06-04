@@ -2,12 +2,22 @@ use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
 use pyo3::prelude::*;
 
+use crate::character::*;
 use crate::hit::*;
 use crate::move_states::*;
-use crate::character::*;
 
 pub const FIXED_TIMESTEP: f32 = 1.0 / 60.0;
 
+// Collision groups:
+// 0: Floor
+// 1: Player floor collider
+// 2: Opponent floor collider
+pub const FLOOR_COLL_GROUP: u32 = 0b001;
+pub const PLAYER_COLL_GROUP: u32 = 0b010;
+pub const OPPONENT_COLL_GROUP: u32 = 0b100;
+pub const FLOOR_COLL_FILTER: u32 = 0b111;
+pub const PLAYER_COLL_FILTER: u32 = 0b001;
+pub const OPPONENT_COLL_FILTER: u32 = 0b001;
 
 /// Stores all the plugins needed for human mode.
 pub struct HumanPlugin;
@@ -65,12 +75,21 @@ impl Default for MicroFighterEnv {
     }
 }
 
+/// Denotes a floor.
+#[derive(Component)]
+pub struct Floor;
+
 fn setup(mut commands: Commands, mut app_state: ResMut<NextState<AppState>>) {
     commands.spawn(Camera2dBundle::default());
     // Floor
     commands.spawn((
+        Floor,
         Collider::cuboid(500.0, 50.0),
         TransformBundle::from(Transform::from_xyz(0.0, -200.0, 0.0)),
+        CollisionGroups::new(
+            Group::from_bits(FLOOR_COLL_GROUP).unwrap(),
+            Group::from_bits(FLOOR_COLL_FILTER).unwrap(),
+        ),
     ));
     // Player
     let p_floor_collider = commands
@@ -78,6 +97,10 @@ fn setup(mut commands: Commands, mut app_state: ResMut<NextState<AppState>>) {
             Collider::cuboid(8.0, 4.0),
             TransformBundle::from(Transform::from_xyz(0.0, -30.0, 0.0)),
             ActiveEvents::COLLISION_EVENTS,
+            CollisionGroups::new(
+                Group::from_bits(PLAYER_COLL_GROUP).unwrap(),
+                Group::from_bits(PLAYER_COLL_FILTER).unwrap(),
+            ),
         ))
         .id();
     let mut p_bundle = CharBundle::default();
@@ -91,6 +114,10 @@ fn setup(mut commands: Commands, mut app_state: ResMut<NextState<AppState>>) {
             Collider::cuboid(8.0, 4.0),
             TransformBundle::from(Transform::from_xyz(0.0, -30.0, 0.0)),
             ActiveEvents::COLLISION_EVENTS,
+            CollisionGroups::new(
+                Group::from_bits(OPPONENT_COLL_GROUP).unwrap(),
+                Group::from_bits(OPPONENT_COLL_FILTER).unwrap(),
+            ),
         ))
         .id();
     let mut b_bundle = CharBundle {

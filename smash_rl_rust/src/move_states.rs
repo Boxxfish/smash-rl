@@ -3,7 +3,8 @@ use bevy_rapier2d::prelude::*;
 
 use crate::{
     character::{CharAttrs, CharInput, Character, HorizontalDir, CHAR_WIDTH},
-    micro_fighter_env::{AppState, FIXED_TIMESTEP}, hit::{HitBundle, Hit},
+    hit::{Hit, HitBundle},
+    micro_fighter_env::{AppState, Floor, FIXED_TIMESTEP},
 };
 
 const JUMP_VEL: f32 = 500.0;
@@ -197,14 +198,18 @@ fn handle_jump(
 
 fn handle_fall(
     mut char_query: Query<(Entity, &CharInput, &mut Velocity, &Character), With<FallState>>,
+    floor_query: Query<Entity, With<Floor>>,
     mut commands: Commands,
     mut ev_collision: EventReader<CollisionEvent>,
 ) {
     for (e, char_inpt, mut vel, character) in char_query.iter_mut() {
+        let floor_e = floor_query.single();
         for ev in ev_collision.iter() {
             if let CollisionEvent::Started(e1, e2, _) = ev {
-                let floor_e = character.floor_collider.unwrap();
-                if *e1 == floor_e || *e2 == floor_e {
+                let floor_collider = character.floor_collider.unwrap();
+                if (*e1 == floor_collider || *e2 == floor_collider)
+                    && (*e1 == floor_e || *e2 == floor_e)
+                {
                     commands.entity(e).insert(IdleState).remove::<FallState>();
                 }
             }
@@ -291,8 +296,6 @@ fn handle_light_attack_recovery(
         }
     }
 }
-
-
 
 fn handle_heavy_attack_startup(
     char_query: Query<(Entity, &CharAttrs, &StateTimer), With<HeavyAttackStartupState>>,

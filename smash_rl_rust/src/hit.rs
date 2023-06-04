@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
 
 use crate::{
-    character::{CharAttrs, Character, HorizontalDir},
+    character::{Character, HorizontalDir},
     micro_fighter_env::AppState,
 };
 
