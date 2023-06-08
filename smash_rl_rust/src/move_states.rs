@@ -3,7 +3,7 @@ use bevy_rapier2d::prelude::*;
 
 use crate::{
     character::{CharAttrs, CharInput, Character, HorizontalDir, CHAR_WIDTH},
-    hit::{Hit, HitBundle},
+    hit::{Hit, HitBundle, Projectile},
     micro_fighter_env::{AppState, Floor, FIXED_TIMESTEP},
 };
 
@@ -40,6 +40,14 @@ impl Plugin for MoveStatesPlugin {
         )
         .add_systems(
             (
+                handle_special_attack_startup,
+                handle_special_attack_hit,
+                handle_special_attack_recovery,
+            )
+                .in_set(OnUpdate(AppState::Running)),
+        )
+        .add_systems(
+            (
                 handle_shield_start,
                 handle_shield,
                 handle_shield_end,
@@ -59,6 +67,14 @@ impl Plugin for MoveStatesPlugin {
                 handle_move_state::<HeavyAttackStartupState>,
                 handle_move_state::<HeavyAttackHitState>,
                 handle_move_state::<HeavyAttackRecoveryState>,
+            )
+                .in_set(OnUpdate(AppState::Running)),
+        )
+        .add_systems(
+            (
+                handle_move_state::<SpecialAttackStartupState>,
+                handle_move_state::<SpecialAttackHitState>,
+                handle_move_state::<SpecialAttackRecoveryState>,
                 handle_move_state::<GrabState>,
                 handle_move_state::<ShieldState>,
                 handle_move_state::<HitstunState>,
@@ -92,6 +108,12 @@ pub struct HeavyAttackStartupState;
 pub struct HeavyAttackHitState;
 #[derive(Component)]
 pub struct HeavyAttackRecoveryState;
+#[derive(Component)]
+pub struct SpecialAttackStartupState;
+#[derive(Component)]
+pub struct SpecialAttackHitState;
+#[derive(Component)]
+pub struct SpecialAttackRecoveryState;
 #[derive(Component)]
 pub struct GrabState;
 
@@ -139,12 +161,13 @@ fn handle_idle(
                 .entity(e)
                 .insert(HeavyAttackStartupState)
                 .remove::<IdleState>();
-        }
-        else if char_inpt.shield {
+        } else if char_inpt.special {
             commands
                 .entity(e)
-                .insert(ShieldState)
+                .insert(SpecialAttackStartupState)
                 .remove::<IdleState>();
+        } else if char_inpt.shield {
+            commands.entity(e).insert(ShieldState).remove::<IdleState>();
         }
     }
 }
@@ -264,6 +287,7 @@ fn handle_light_attack_hit_start(
                 char_attrs.light_angle,
                 HIT_OFFSET,
                 character.dir,
+                e,
             ))
             .id();
         commands.entity(e).add_child(hit);
@@ -339,6 +363,7 @@ fn handle_heavy_attack_hit_start(
                 char_attrs.heavy_angle,
                 HIT_OFFSET,
                 character.dir,
+                e,
             ))
             .id();
         commands.entity(e).add_child(hit);
@@ -411,5 +436,64 @@ fn handle_shield_end(
     for e in rem_query.iter() {
         let mut character = char_query.get_mut(e).unwrap();
         character.shielding = false;
+    }
+}
+
+fn handle_special_attack_startup(
+    char_query: Query<(Entity, &CharAttrs, &StateTimer), With<SpecialAttackStartupState>>,
+    mut commands: Commands,
+) {
+    for (e, char_attrs, timer) in char_query.iter() {
+        if timer.frames == char_attrs.projectile_startup {
+            commands
+                .entity(e)
+                .insert(SpecialAttackHitState)
+                .remove::<SpecialAttackStartupState>();
+        }
+    }
+}
+
+fn handle_special_attack_hit(
+    char_query: Query<(Entity, &CharAttrs, &Character, &Transform), With<SpecialAttackHitState>>,
+    mut commands: Commands,
+) {
+    for (e, char_attrs, character, transform) in char_query.iter() {
+        let mut hit_bundle = HitBundle::new(
+            char_attrs.projectile_dmg,
+            char_attrs.projectile_size,
+            char_attrs.projectile_size,
+            0,
+            Vec2::ZERO,
+            character.dir,
+            e,
+        );
+        hit_bundle.transform.local.translation = transform.translation;
+        commands.spawn((
+            Projectile {
+                frames_left: char_attrs.projectile_lifetime,
+                speed: char_attrs.projectile_speed,
+                dir: character.dir,
+            },
+            hit_bundle,
+        ));
+
+        commands
+            .entity(e)
+            .insert(SpecialAttackRecoveryState)
+            .remove::<SpecialAttackHitState>();
+    }
+}
+
+fn handle_special_attack_recovery(
+    char_query: Query<(Entity, &CharAttrs, &StateTimer), With<SpecialAttackRecoveryState>>,
+    mut commands: Commands,
+) {
+    for (e, char_attrs, timer) in char_query.iter() {
+        if timer.frames == char_attrs.heavy_recovery {
+            commands
+                .entity(e)
+                .insert(IdleState)
+                .remove::<SpecialAttackRecoveryState>();
+        }
     }
 }

@@ -11,7 +11,10 @@ pub struct HitPlugin;
 
 impl Plugin for HitPlugin {
     fn build(&self, app: &mut App) {
-        app.add_system(compute_hit_interactions.in_set(OnUpdate(AppState::Running)));
+        app.add_systems(
+            (compute_hit_interactions, move_projectile_and_remove)
+                .in_set(OnUpdate(AppState::Running)),
+        );
     }
 }
 
@@ -21,6 +24,16 @@ pub struct Hit {
     pub damage: u32,
     pub direction: Vec2,
     pub chars_hit: Vec<Entity>,
+    pub owner: Entity,
+}
+
+/// Denotes a projectile.
+/// Doesn't do any damage by itself.
+#[derive(Component)]
+pub struct Projectile {
+    pub frames_left: u32,
+    pub speed: u32,
+    pub dir: HorizontalDir,
 }
 
 /// Bundle for hits.
@@ -41,6 +54,7 @@ impl HitBundle {
         angle: u32,
         offset: Vec2,
         dir: HorizontalDir,
+        owner: Entity,
     ) -> Self {
         let dir_mult = match dir {
             HorizontalDir::Left => -1.0,
@@ -60,6 +74,7 @@ impl HitBundle {
                     (angle as f32).to_radians().cos() * dir_mult,
                     (angle as f32).to_radians().sin(),
                 ),
+                owner,
             },
             collider: Collider::cuboid(dist as f32 / 2.0, size as f32 / 2.0),
             transform: TransformBundle::from(Transform {
@@ -75,14 +90,14 @@ impl HitBundle {
 
 /// Causes characters to go flying when hit.
 fn compute_hit_interactions(
-    mut hit_query: Query<(&mut Hit, &Parent)>,
+    mut hit_query: Query<&mut Hit>,
     mut char_query: Query<&mut Character, With<Character>>,
     mut ev_collision: EventReader<CollisionEvent>,
     mut commands: Commands,
 ) {
     for ev in ev_collision.iter() {
         if let CollisionEvent::Started(e1, e2, _) = ev {
-            let ((mut hit, hit_parent), mut character, char_e) =
+            let (mut hit, mut character, char_e) =
                 if hit_query.get(*e1).is_ok() && char_query.get(*e2).is_ok() {
                     (
                         hit_query.get_mut(*e1).unwrap(),
@@ -100,7 +115,7 @@ fn compute_hit_interactions(
                 };
 
             // If the character that created the hit has been hit, skip
-            if hit_parent.get() == char_e {
+            if hit.owner == char_e {
                 continue;
             }
 
@@ -126,6 +141,27 @@ fn compute_hit_interactions(
 
             // Add character to hit's hit list
             hit.chars_hit.push(char_e);
+        }
+    }
+}
+
+/// Moves the projectile and removes it when time runs out.
+fn move_projectile_and_remove(
+    mut proj_query: Query<(Entity, &mut Projectile, &mut Transform)>,
+    mut commands: Commands,
+) {
+    for (e, mut projectile, mut transform) in proj_query.iter_mut() {
+        // Move the projectile forward
+        let dir = match projectile.dir {
+            HorizontalDir::Left => -Vec3::X,
+            HorizontalDir::Right => Vec3::X,
+        };
+        transform.translation += dir * projectile.speed as f32;
+
+        // Remove projectile when time runs out
+        projectile.frames_left = projectile.frames_left.saturating_sub(1);
+        if projectile.frames_left == 0 {
+            commands.entity(e).despawn();
         }
     }
 }

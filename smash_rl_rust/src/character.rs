@@ -144,7 +144,7 @@ pub struct CharAttrs {
     pub throw_angle: u32,
     /// Throwing damage.
     pub throw_dmg: u32,
-    /// Speed of the projectile, in pixels per second.
+    /// Speed of the projectile, in pixels per frame.
     pub projectile_speed: u32,
     /// Size of the projectile, in pixels.
     pub projectile_size: u32,
