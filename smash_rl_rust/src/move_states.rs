@@ -1,9 +1,11 @@
+use std::marker::PhantomData;
+
 use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
 
 use crate::{
     character::{CharAttrs, CharInput, Character, HorizontalDir, CHAR_WIDTH},
-    hit::{Hit, HitBundle, Projectile, HitType},
+    hit::{Hit, HitBundle, HitType, Projectile},
     micro_fighter_env::{AppState, Floor, FIXED_TIMESTEP},
 };
 
@@ -56,36 +58,27 @@ impl Plugin for MoveStatesPlugin {
                 handle_grab_start,
                 handle_grab,
                 handle_grab_end,
+                handle_hitstun,
                 update_timer,
             )
                 .in_set(OnUpdate(AppState::Running)),
         )
-        .add_systems(
-            (
-                handle_move_state::<IdleState>,
-                handle_move_state::<RunState>,
-                handle_move_state::<JumpState>,
-                handle_move_state::<FallState>,
-                handle_move_state::<LightAttackStartupState>,
-                handle_move_state::<LightAttackHitState>,
-                handle_move_state::<LightAttackRecoveryState>,
-                handle_move_state::<HeavyAttackStartupState>,
-                handle_move_state::<HeavyAttackHitState>,
-                handle_move_state::<HeavyAttackRecoveryState>,
-            )
-                .in_set(OnUpdate(AppState::Running)),
-        )
-        .add_systems(
-            (
-                handle_move_state::<SpecialAttackStartupState>,
-                handle_move_state::<SpecialAttackHitState>,
-                handle_move_state::<SpecialAttackRecoveryState>,
-                handle_move_state::<GrabState>,
-                handle_move_state::<ShieldState>,
-                handle_move_state::<HitstunState>,
-            )
-                .in_set(OnUpdate(AppState::Running)),
-        );
+        .add_plugin(MoveStatePlugin::<IdleState>::default())
+        .add_plugin(MoveStatePlugin::<RunState>::default())
+        .add_plugin(MoveStatePlugin::<JumpState>::default())
+        .add_plugin(MoveStatePlugin::<FallState>::default())
+        .add_plugin(MoveStatePlugin::<LightAttackStartupState>::default())
+        .add_plugin(MoveStatePlugin::<LightAttackHitState>::default())
+        .add_plugin(MoveStatePlugin::<LightAttackRecoveryState>::default())
+        .add_plugin(MoveStatePlugin::<HeavyAttackStartupState>::default())
+        .add_plugin(MoveStatePlugin::<HeavyAttackHitState>::default())
+        .add_plugin(MoveStatePlugin::<HeavyAttackRecoveryState>::default())
+        .add_plugin(MoveStatePlugin::<SpecialAttackStartupState>::default())
+        .add_plugin(MoveStatePlugin::<SpecialAttackHitState>::default())
+        .add_plugin(MoveStatePlugin::<SpecialAttackRecoveryState>::default())
+        .add_plugin(MoveStatePlugin::<GrabState>::default())
+        .add_plugin(MoveStatePlugin::<ShieldState>::default())
+        .add_plugin(MoveStatePlugin::<HitstunState>::default());
     }
 }
 
@@ -100,7 +93,10 @@ pub struct FallState;
 #[derive(Component)]
 pub struct ShieldState;
 #[derive(Component)]
-pub struct HitstunState;
+pub struct HitstunState {
+    /// Number of frames before exiting hitstun.
+    pub frames: u32,
+}
 #[derive(Component)]
 pub struct LightAttackStartupState;
 #[derive(Component)]
@@ -129,10 +125,41 @@ pub struct StateTimer {
 }
 
 /// Treats the component as a move state.
-/// Clears the state timer whenever the component is added.
-fn handle_move_state<T: Component>(mut timer_query: Query<&mut StateTimer, Added<T>>) {
+struct MoveStatePlugin<T: Component> {
+    t: PhantomData<T>,
+}
+
+impl<T: Component> Default for MoveStatePlugin<T> {
+    fn default() -> Self {
+        Self {
+            t: Default::default(),
+        }
+    }
+}
+
+impl<T: Component> Plugin for MoveStatePlugin<T> {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
+            (reset_state_timer::<T>, exit_on_hitstun::<T>).in_set(OnUpdate(AppState::Running)),
+        );
+    }
+}
+
+/// Resets the state timer whenever the component is added.
+fn reset_state_timer<T: Component>(mut timer_query: Query<&mut StateTimer, Added<T>>) {
     for mut timer in timer_query.iter_mut() {
         timer.frames = 0;
+    }
+}
+
+fn exit_on_hitstun<T: Component>(
+    char_query: Query<(Entity, Option<&T>), Added<HitstunState>>,
+    mut commands: Commands,
+) {
+    for (e, state) in char_query.iter() {
+        if state.is_some() {
+            commands.entity(e).remove::<T>();
+        }
     }
 }
 
@@ -529,16 +556,10 @@ fn handle_grab_start(
     }
 }
 
-fn handle_grab(
-    char_query: Query<(Entity, &StateTimer), With<GrabState>>,
-    mut commands: Commands,
-) {
+fn handle_grab(char_query: Query<(Entity, &StateTimer), With<GrabState>>, mut commands: Commands) {
     for (e, timer) in char_query.iter() {
         if timer.frames == GRAB_RECOVERY {
-            commands
-                .entity(e)
-                .insert(IdleState)
-                .remove::<GrabState>();
+            commands.entity(e).insert(IdleState).remove::<GrabState>();
         }
     }
 }
@@ -552,6 +573,51 @@ fn handle_grab_end(
         for (hit_e, hit_parent) in hit_query.iter() {
             if hit_parent.get() == e {
                 commands.entity(hit_e).despawn();
+            }
+        }
+    }
+}
+
+fn handle_hitstun(
+    mut char_query: Query<(
+        Entity,
+        &CharInput,
+        &mut Velocity,
+        &Character,
+        &HitstunState,
+        &StateTimer,
+    )>,
+    floor_query: Query<Entity, With<Floor>>,
+    mut commands: Commands,
+    mut ev_collision: EventReader<CollisionEvent>,
+) {
+    for (e, char_inpt, mut vel, character, hitstun_state, timer) in char_query.iter_mut() {
+        if timer.frames == hitstun_state.frames {
+            // Check if on ground
+            let mut on_ground = false;
+            let floor_e = floor_query.single();
+            for ev in ev_collision.iter() {
+                if let CollisionEvent::Started(e1, e2, _) = ev {
+                    let floor_collider = character.floor_collider.unwrap();
+                    if (*e1 == floor_collider || *e2 == floor_collider)
+                        && (*e1 == floor_e || *e2 == floor_e)
+                    {
+                        on_ground = true;
+                        break;
+                    }
+                }
+            }
+
+            if on_ground {
+                commands
+                    .entity(e)
+                    .insert(IdleState)
+                    .remove::<HitstunState>();
+            } else {
+                commands
+                    .entity(e)
+                    .insert(FallState)
+                    .remove::<HitstunState>();
             }
         }
     }

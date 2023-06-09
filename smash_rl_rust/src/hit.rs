@@ -3,8 +3,13 @@ use bevy_rapier2d::prelude::*;
 
 use crate::{
     character::{Character, HorizontalDir},
-    micro_fighter_env::AppState,
+    micro_fighter_env::AppState, move_states::HitstunState,
 };
+
+/// Conversion of knockback units to velocity.
+const KB_TO_VEL: f32 = 4.0;
+/// Number of frames in hitstun as a percentage of knockback.
+const HITSTUN_PCT: f32 = 0.4;
 
 /// Plugin for hit functionality.
 pub struct HitPlugin;
@@ -143,13 +148,17 @@ fn compute_hit_interactions(
                 character.damage += hit.damage;
                 let knockback = ((character.damage as f32) / 10.0)
                     + (character.damage * hit.damage) as f32 / 20.0;
-                let impulse = hit.direction * knockback;
+                let impulse = hit.direction * knockback * KB_TO_VEL;
+                let hitstun_frames = (knockback * HITSTUN_PCT) as u32;
                 commands
                     .get_entity(char_e)
                     .unwrap()
                     .insert(ExternalImpulse {
                         impulse,
                         ..default()
+                    })
+                    .insert(HitstunState {
+                        frames: hitstun_frames,
                     });
             }
 
@@ -159,13 +168,17 @@ fn compute_hit_interactions(
                 character.damage += hit.damage;
                 let knockback = ((character.damage as f32) / 10.0)
                     + (character.damage * hit.damage) as f32 / 20.0;
-                let impulse = hit.direction * knockback;
+                let impulse = hit.direction * knockback * KB_TO_VEL;
+                let hitstun_frames = (knockback * HITSTUN_PCT) as u32;
                 commands
                     .get_entity(char_e)
                     .unwrap()
                     .insert(ExternalImpulse {
                         impulse,
                         ..default()
+                    })
+                    .insert(HitstunState {
+                        frames: hitstun_frames,
                     });
             }
 

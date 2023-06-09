@@ -169,7 +169,7 @@ impl Default for CharAttrs {
             light_angle: 20,
             light_startup: 1,
             light_recovery: 2,
-            light_dmg: 8,
+            light_dmg: 4,
             heavy_size: 12,
             heavy_dist: 20,
             heavy_angle: 20,
