@@ -3,7 +3,7 @@ use bevy_rapier2d::prelude::*;
 
 use crate::{
     character::{CharAttrs, CharInput, Character, HorizontalDir, CHAR_WIDTH},
-    hit::{Hit, HitBundle, Projectile},
+    hit::{Hit, HitBundle, Projectile, HitType},
     micro_fighter_env::{AppState, Floor, FIXED_TIMESTEP},
 };
 
@@ -13,6 +13,8 @@ const HIT_OFFSET: Vec2 = Vec2 {
     x: CHAR_WIDTH / 2.0,
     y: 0.0,
 };
+const GRAB_RECOVERY: u32 = 10;
+const GRAB_SIZE: u32 = 4;
 
 /// Plugin for move states.
 pub struct MoveStatesPlugin;
@@ -51,6 +53,9 @@ impl Plugin for MoveStatesPlugin {
                 handle_shield_start,
                 handle_shield,
                 handle_shield_end,
+                handle_grab_start,
+                handle_grab,
+                handle_grab_end,
                 update_timer,
             )
                 .in_set(OnUpdate(AppState::Running)),
@@ -168,6 +173,8 @@ fn handle_idle(
                 .remove::<IdleState>();
         } else if char_inpt.shield {
             commands.entity(e).insert(ShieldState).remove::<IdleState>();
+        } else if char_inpt.grab {
+            commands.entity(e).insert(GrabState).remove::<IdleState>();
         }
     }
 }
@@ -288,6 +295,7 @@ fn handle_light_attack_hit_start(
                 HIT_OFFSET,
                 character.dir,
                 e,
+                HitType::Normal,
             ))
             .id();
         commands.entity(e).add_child(hit);
@@ -364,6 +372,7 @@ fn handle_heavy_attack_hit_start(
                 HIT_OFFSET,
                 character.dir,
                 e,
+                HitType::Normal,
             ))
             .id();
         commands.entity(e).add_child(hit);
@@ -466,6 +475,7 @@ fn handle_special_attack_hit(
             Vec2::ZERO,
             character.dir,
             e,
+            HitType::Normal,
         );
         hit_bundle.transform.local.translation = transform.translation;
         commands.spawn((
@@ -494,6 +504,55 @@ fn handle_special_attack_recovery(
                 .entity(e)
                 .insert(IdleState)
                 .remove::<SpecialAttackRecoveryState>();
+        }
+    }
+}
+
+fn handle_grab_start(
+    char_query: Query<(Entity, &CharAttrs, &Character), Added<GrabState>>,
+    mut commands: Commands,
+) {
+    for (e, char_attrs, character) in char_query.iter() {
+        let hit = commands
+            .spawn(HitBundle::new(
+                char_attrs.throw_dmg,
+                GRAB_SIZE,
+                GRAB_SIZE,
+                char_attrs.throw_angle,
+                HIT_OFFSET,
+                character.dir,
+                e,
+                HitType::Grab,
+            ))
+            .id();
+        commands.entity(e).add_child(hit);
+    }
+}
+
+fn handle_grab(
+    char_query: Query<(Entity, &StateTimer), With<GrabState>>,
+    mut commands: Commands,
+) {
+    for (e, timer) in char_query.iter() {
+        if timer.frames == GRAB_RECOVERY {
+            commands
+                .entity(e)
+                .insert(IdleState)
+                .remove::<GrabState>();
+        }
+    }
+}
+
+fn handle_grab_end(
+    mut rem_query: RemovedComponents<GrabState>,
+    hit_query: Query<(Entity, &Parent), With<Hit>>,
+    mut commands: Commands,
+) {
+    for e in rem_query.iter() {
+        for (hit_e, hit_parent) in hit_query.iter() {
+            if hit_parent.get() == e {
+                commands.entity(hit_e).despawn();
+            }
         }
     }
 }

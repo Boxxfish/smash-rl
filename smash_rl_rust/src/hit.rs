@@ -18,6 +18,15 @@ impl Plugin for HitPlugin {
     }
 }
 
+/// The effect of the hit.
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum HitType {
+    /// Knocks back an opponent. Can be shielded.
+    Normal,
+    /// Throws an opponent. Can't be shielded.
+    Grab,
+}
+
 /// Denotes that the entity is a hitbox.
 #[derive(Component)]
 pub struct Hit {
@@ -25,6 +34,7 @@ pub struct Hit {
     pub direction: Vec2,
     pub chars_hit: Vec<Entity>,
     pub owner: Entity,
+    hit_type: HitType,
 }
 
 /// Denotes a projectile.
@@ -47,6 +57,7 @@ pub struct HitBundle {
 }
 
 impl HitBundle {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         damage: u32,
         size: u32,
@@ -55,6 +66,7 @@ impl HitBundle {
         offset: Vec2,
         dir: HorizontalDir,
         owner: Entity,
+        hit_type: HitType,
     ) -> Self {
         let dir_mult = match dir {
             HorizontalDir::Left => -1.0,
@@ -75,6 +87,7 @@ impl HitBundle {
                     (angle as f32).to_radians().sin(),
                 ),
                 owner,
+                hit_type,
             },
             collider: Collider::cuboid(dist as f32 / 2.0, size as f32 / 2.0),
             transform: TransformBundle::from(Transform {
@@ -124,7 +137,24 @@ fn compute_hit_interactions(
                 continue;
             }
 
-            if !character.shielding {
+            // Compute normal hit
+            if hit.hit_type == HitType::Normal && !character.shielding {
+                // Apply the appropriate amount of impulse
+                character.damage += hit.damage;
+                let knockback = ((character.damage as f32) / 10.0)
+                    + (character.damage * hit.damage) as f32 / 20.0;
+                let impulse = hit.direction * knockback;
+                commands
+                    .get_entity(char_e)
+                    .unwrap()
+                    .insert(ExternalImpulse {
+                        impulse,
+                        ..default()
+                    });
+            }
+
+            // Compute grab
+            if hit.hit_type == HitType::Grab {
                 // Apply the appropriate amount of impulse
                 character.damage += hit.damage;
                 let knockback = ((character.damage as f32) / 10.0)
