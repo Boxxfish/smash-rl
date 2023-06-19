@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
 
 use crate::{
-    micro_fighter_env::AppState,
+    micro_fighter::AppState,
     move_states::{IdleState, StateTimer},
 };
 
@@ -13,7 +13,7 @@ pub struct CharacterPlugin;
 
 impl Plugin for CharacterPlugin {
     fn build(&self, app: &mut App) {
-        app.add_system(player_input.in_set(OnUpdate(AppState::Running)));
+        app;
     }
 }
 
@@ -186,36 +186,4 @@ impl Default for CharAttrs {
             projectile_lifetime: 30,
         }
     }
-}
-
-/// Handles input from the keyboard.
-fn player_input(keys: Res<Input<KeyCode>>, mut player_query: Query<(&mut CharInput, &mut Player)>) {
-    let (mut player_input, mut player) = player_query.single_mut();
-    let hold_left = keys.pressed(KeyCode::Left);
-    let hold_right = keys.pressed(KeyCode::Right);
-    if !(hold_left ^ hold_right) {
-        player_input.left = false;
-        player_input.right = false;
-    } else {
-        player_input.left = hold_left;
-        player_input.right = hold_right;
-    }
-
-    if keys.just_pressed(KeyCode::Left) {
-        player.left_pressed = 8;
-    }
-    if keys.just_pressed(KeyCode::Right) {
-        player.right_pressed = 8;
-    }
-    let can_heavy =
-        (player.left_pressed > 0 && hold_left) || (player.right_pressed > 0 && hold_right);
-    player.left_pressed = player.left_pressed.saturating_sub(1);
-    player.right_pressed = player.right_pressed.saturating_sub(1);
-
-    player_input.jump = keys.just_pressed(KeyCode::Up);
-    player_input.shield = keys.pressed(KeyCode::S);
-    player_input.grab = keys.just_pressed(KeyCode::Z);
-    player_input.light = keys.just_pressed(KeyCode::X) && !can_heavy;
-    player_input.heavy = keys.just_pressed(KeyCode::X) && can_heavy;
-    player_input.special = keys.just_pressed(KeyCode::C);
 }

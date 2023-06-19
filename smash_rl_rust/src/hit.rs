@@ -3,7 +3,7 @@ use bevy_rapier2d::prelude::*;
 
 use crate::{
     character::{Character, HorizontalDir},
-    micro_fighter_env::AppState, move_states::HitstunState,
+    micro_fighter::AppState, move_states::HitstunState,
 };
 
 /// Conversion of knockback units to velocity.

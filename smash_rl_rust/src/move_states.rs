@@ -6,7 +6,7 @@ use bevy_rapier2d::prelude::*;
 use crate::{
     character::{CharAttrs, CharInput, Character, HorizontalDir, CHAR_WIDTH},
     hit::{Hit, HitBundle, HitType, Projectile},
-    micro_fighter_env::{AppState, Floor, FIXED_TIMESTEP},
+    micro_fighter::{AppState, Floor, FIXED_TIMESTEP},
 };
 
 const JUMP_VEL: f32 = 500.0;

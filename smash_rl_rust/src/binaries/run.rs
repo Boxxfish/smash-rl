@@ -1,6 +1,6 @@
-use smash_rl_rust::micro_fighter_env::MicroFighterEnv;
+use smash_rl_rust::micro_fighter::MicroFighter;
 
 fn main() {
-    let env = MicroFighterEnv::new();
+    let mut env = MicroFighter::new(true);
     env.run();
 }

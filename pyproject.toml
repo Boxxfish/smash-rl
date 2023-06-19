@@ -16,6 +16,9 @@ gymnasium = "^0.28.1"
 envpool = "^0.8.2"
 types-tqdm = "^4.65.0.1"
 maturin = "^0.15.2"
+pillow = "^9.5.0"
+matplotlib = "^3.7.1"
+pygame = "^2.4.0"
 
 
 [tool.poetry.group.dev.dependencies]
