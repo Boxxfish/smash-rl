@@ -11,6 +11,8 @@ import torch
 import torch.nn as nn
 import wandb
 from gymnasium.vector import SyncVectorEnv
+from gymnasium.wrappers.time_limit import TimeLimit
+from gymnasium.wrappers.frame_stack import FrameStack
 import gymnasium as gym
 from tqdm import tqdm
 
@@ -24,19 +26,20 @@ _: Any
 INF = 10**8
 
 # Hyperparameters
-num_envs = 32  # Number of environments to step through at once during sampling.
-train_steps = 4  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
+num_envs = 1  # Number of environments to step through at once during sampling.
+train_steps = 128  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
 iterations = 100000  # Number of sample/train iterations.
 train_iters = 1  # Number of passes over the samples collected.
-train_batch_size = 512  # Minibatch size while training models.
+train_batch_size = 64  # Minibatch size while training models.
 discount = 0.999  # Discount factor applied to rewards.
-q_epsilon = 0.1  # Epsilon for epsilon greedy strategy. This gets annealed over time.
-eval_steps = 8  # Number of eval runs to average over.
-max_eval_steps = 300  # Max number of steps to take during each eval run.
+q_epsilon = 0.9  # Epsilon for epsilon greedy strategy. This gets annealed over time.
+eval_steps = 2  # Number of eval runs to average over.
+max_eval_steps = 100  # Max number of steps to take during each eval run.
 q_lr = 0.0001  # Learning rate of the q net.
 warmup_steps = 500  # For the first n number of steps, we will only sample randomly.
-buffer_size = 2000  # Number of elements that can be stored in the buffer.
+buffer_size = 1000  # Number of elements that can be stored in the buffer.
 target_update = 500  # Number of iterations before updating Q target.
+num_frames = 4 # Number of frames in frame stack.
 device = torch.device("cuda")
 
 wandb.init(
@@ -52,6 +55,7 @@ wandb.init(
         "q_epsilon": q_epsilon,
         "max_eval_steps": max_eval_steps,
         "q_lr": q_lr,
+        "num_frames": num_frames,
     },
 )
 
@@ -63,14 +67,16 @@ class QNet(nn.Module):
         action_count: int,
     ):
         nn.Module.__init__(self)
-        channels = obs_shape[0]
+        channels = obs_shape[0] * obs_shape[1] # Frames times channels
         self.net = nn.Sequential(
             nn.Conv2d(channels, 8, 3, stride=2),
             nn.ReLU(),
             nn.Conv2d(8, 12, 3, stride=2),
             nn.ReLU(),
-            nn.Conv2d(12, 32, 3, stride=2),
+            nn.Conv2d(12, 64, 3, stride=2),
             nn.ReLU(),
+        )
+        self.net2 = nn.Sequential(            
             nn.Linear(64, 64),
             nn.ReLU(),
             nn.Linear(64, 64),
@@ -84,15 +90,18 @@ class QNet(nn.Module):
         self.action_count = action_count
         init_orthogonal(self)
 
-    def forward(self, input: torch.Tensor):
-        x = self.net(input)
+    def forward(self, x: torch.Tensor):
+        x = torch.flatten(x, 1, 2)
+        x = self.net(x)
+        x = torch.max(torch.max(x, dim=3).values, dim=2).values
+        x = self.net2(x)
         advantage = self.advantage(x)
         value = self.value(x)
         return value + advantage - advantage.mean(1, keepdim=True)
 
 
-env = SyncVectorEnv([(lambda: MFEnv()) for _ in range(num_envs)])
-test_env = MFEnv()
+env = SyncVectorEnv([(lambda: TimeLimit(FrameStack(MFEnv(), num_frames), 100)) for _ in range(num_envs)])
+test_env = FrameStack(MFEnv(), num_frames)
 
 # Initialize Q network
 obs_space = env.single_observation_space

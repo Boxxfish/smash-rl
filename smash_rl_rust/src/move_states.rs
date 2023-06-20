@@ -254,7 +254,7 @@ fn handle_jump(
 ) {
     for (e, char_inpt, char_attrs, mut vel, timer) in char_query.iter_mut() {
         vel.linvel.y = JUMP_VEL;
-        if timer.frames == ((char_attrs.jump_height as f32 / JUMP_VEL) / FIXED_TIMESTEP) as u32 {
+        if timer.frames >= ((char_attrs.jump_height as f32 / JUMP_VEL) / FIXED_TIMESTEP) as u32 {
             commands
                 .entity(e)
                 .insert((FallState, GravityScale(10.0)))

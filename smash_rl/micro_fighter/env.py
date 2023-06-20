@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw  # type: ignore
 from matplotlib import pyplot as plt  # type: ignore
 import pygame
 
-IMG_SIZE = 64
+IMG_SIZE = 32
 IMG_SCALE = 4
 
 
