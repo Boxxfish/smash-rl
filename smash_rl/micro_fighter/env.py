@@ -2,6 +2,7 @@
 Environments for Micro Fighter.
 """
 import math
+import random
 from typing import Any, List, Optional, Tuple
 import gymnasium as gym
 import numpy as np
@@ -41,15 +42,19 @@ class MFEnv(gym.Env):
     def __init__(
         self,
         render_mode: Optional[str] = None,
-        view_channels: Optional[Tuple[int, int, int]] = None,
+        view_channels: Tuple[int, int, int] = (0, 1, 2),
+        max_skip_frames: int = 0,
     ):
         """
         Args:
         
         render_mode: If "human", renders channels.
 
-        view_channels: Optinal 3 string tuple of channels. The channels will be \
+        view_channels: Optional 3 string tuple of channels. The channels will be \
             rendered as R, G, and B. See class description for channels.
+        
+        max_skip_frames: Maximum number of frames that will be skipped. When 0, no \
+            frames are skipped. The actual number of frames skipped is random.
         """
 
         self.game = MicroFighter(False)
@@ -57,9 +62,8 @@ class MFEnv(gym.Env):
         self.action_space = gym.spaces.Discrete(8)
         self.render_mode = render_mode
         self.channels = [np.zeros([IMG_SIZE, IMG_SIZE]) for _ in range(5)]
-        self.view_channels = (0, 1, 2)
-        if view_channels:
-            self.view_channels = view_channels
+        self.max_skip_frames = max_skip_frames
+        self.view_channels = view_channels
         if self.render_mode == "human":
             pygame.init()
             self.screen = pygame.display.set_mode(
@@ -68,7 +72,12 @@ class MFEnv(gym.Env):
             self.clock = pygame.time.Clock()
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
-        step_output = self.game.step(action)
+        skip_frames = random.randrange(0, self.max_skip_frames)
+        for _  in range(skip_frames + 1):
+            step_output = self.game.step(action)
+            if step_output.round_over:
+                break
+        
         self.channels = self.gen_channels(step_output)
 
         terminated = step_output.round_over

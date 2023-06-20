@@ -15,6 +15,7 @@ from gymnasium.wrappers.time_limit import TimeLimit
 from gymnasium.wrappers.frame_stack import FrameStack
 import gymnasium as gym
 from tqdm import tqdm
+from argparse import ArgumentParser
 
 import smash_rl.conf
 from smash_rl.algorithms.dqn import train_dqn
@@ -39,26 +40,10 @@ q_lr = 0.0001  # Learning rate of the q net.
 warmup_steps = 500  # For the first n number of steps, we will only sample randomly.
 buffer_size = 1000  # Number of elements that can be stored in the buffer.
 target_update = 500  # Number of iterations before updating Q target.
-num_frames = 4 # Number of frames in frame stack.
+num_frames = 4  # Number of frames in frame stack.
+max_skip_frames = 4  # Max number of frames to skip.
+time_limit = 500  # Time limit before truncation.
 device = torch.device("cuda")
-
-wandb.init(
-    project="smash-rl",
-    entity=smash_rl.conf.entity,
-    config={
-        "experiment": "dqn",
-        "num_envs": num_envs,
-        "train_steps": train_steps,
-        "train_iters": train_iters,
-        "train_batch_size": train_batch_size,
-        "discount": discount,
-        "q_epsilon": q_epsilon,
-        "max_eval_steps": max_eval_steps,
-        "q_lr": q_lr,
-        "num_frames": num_frames,
-    },
-)
-
 
 class QNet(nn.Module):
     def __init__(
@@ -67,7 +52,7 @@ class QNet(nn.Module):
         action_count: int,
     ):
         nn.Module.__init__(self)
-        channels = obs_shape[0] * obs_shape[1] # Frames times channels
+        channels = obs_shape[0] * obs_shape[1]  # Frames times channels
         self.net = nn.Sequential(
             nn.Conv2d(channels, 8, 3, stride=2),
             nn.ReLU(),
@@ -76,7 +61,7 @@ class QNet(nn.Module):
             nn.Conv2d(12, 64, 3, stride=2),
             nn.ReLU(),
         )
-        self.net2 = nn.Sequential(            
+        self.net2 = nn.Sequential(
             nn.Linear(64, 64),
             nn.ReLU(),
             nn.Linear(64, 64),
@@ -99,9 +84,65 @@ class QNet(nn.Module):
         value = self.value(x)
         return value + advantage - advantage.mean(1, keepdim=True)
 
+env = SyncVectorEnv(
+    [
+        (
+            lambda: TimeLimit(
+                FrameStack(MFEnv(max_skip_frames=max_skip_frames), num_frames), time_limit
+            )
+        )
+        for _ in range(num_envs)
+    ]
+)
+test_env = FrameStack(MFEnv(max_skip_frames=max_skip_frames), num_frames)
 
-env = SyncVectorEnv([(lambda: TimeLimit(FrameStack(MFEnv(), num_frames), 100)) for _ in range(num_envs)])
-test_env = FrameStack(MFEnv(), num_frames)
+# Argument parsing
+parser = ArgumentParser()
+parser.add_argument("--eval", action="store_true")
+args = parser.parse_args()
+
+# If evaluating, load the latest policy
+if args.eval:
+    eval_done = False
+    obs_space = env.single_observation_space
+    act_space = env.single_action_space
+    assert isinstance(obs_space, gym.spaces.Box)
+    assert isinstance(act_space, gym.spaces.Discrete)
+    q_net = QNet(torch.Size(obs_space.shape), int(act_space.n))
+    q_net.load_state_dict(torch.load("temp/q_net.pt"))
+    test_env = FrameStack(MFEnv(max_skip_frames=max_skip_frames, render_mode="human", view_channels=(0, 2, 4)), num_frames)
+    with torch.no_grad():
+        reward_total = 0.0
+        obs_, info = test_env.reset()
+        eval_obs = torch.from_numpy(np.array(obs_)).float()
+        while True:
+            q_vals = q_net(eval_obs.unsqueeze(0)).squeeze()
+            action = q_vals.argmax(0).item()
+            obs_, reward, eval_done, eval_trunc, _ = test_env.step(action)
+            test_env.render()
+            eval_obs = torch.from_numpy(np.array(obs_)).float()
+            reward_total += reward
+            if eval_done or eval_trunc:
+                obs_, info = test_env.reset()
+                eval_obs = torch.from_numpy(np.array(obs_)).float()
+
+wandb.init(
+    project="smash-rl",
+    entity=smash_rl.conf.entity,
+    config={
+        "experiment": "dqn",
+        "num_envs": num_envs,
+        "train_steps": train_steps,
+        "train_iters": train_iters,
+        "train_batch_size": train_batch_size,
+        "discount": discount,
+        "q_epsilon": q_epsilon,
+        "max_eval_steps": max_eval_steps,
+        "q_lr": q_lr,
+        "num_frames": num_frames,
+        "max_skip_frames": max_skip_frames,
+    },
+)
 
 # Initialize Q network
 obs_space = env.single_observation_space
