@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
 
 use crate::{
-    micro_fighter::AppState,
+    micro_fighter::{AppState, SCREEN_SIZE},
     move_states::{IdleState, StateTimer},
 };
 
@@ -13,7 +13,8 @@ pub struct CharacterPlugin;
 
 impl Plugin for CharacterPlugin {
     fn build(&self, app: &mut App) {
-        app;
+        app.add_system(round_over_on_edge.in_set(OnUpdate(AppState::Running)))
+            .add_event::<RoundOverEvent>();
     }
 }
 
@@ -184,6 +185,26 @@ impl Default for CharAttrs {
             projectile_recovery: 2,
             projectile_dmg: 4,
             projectile_lifetime: 30,
+        }
+    }
+}
+
+/// Sent when the game ends.
+pub struct RoundOverEvent {
+    pub player_won: bool,
+}
+
+/// When a character touches one of the screen edges, emit a round over.
+fn round_over_on_edge(
+    char_query: Query<(&Transform, Option<&Player>)>,
+    mut ev_round_over: EventWriter<RoundOverEvent>,
+) {
+    for (transform, player) in char_query.iter() {
+        if transform.translation.x < -((SCREEN_SIZE / 2) as f32)
+            || transform.translation.x > (SCREEN_SIZE / 2) as f32
+        {
+            let player_won = player.is_none();
+            ev_round_over.send(RoundOverEvent { player_won });
         }
     }
 }

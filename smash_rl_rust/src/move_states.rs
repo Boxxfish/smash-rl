@@ -470,8 +470,9 @@ fn handle_shield_end(
     mut char_query: Query<&mut Character>,
 ) {
     for e in rem_query.iter() {
-        let mut character = char_query.get_mut(e).unwrap();
-        character.shielding = false;
+        if let Ok(mut character) = char_query.get_mut(e) {
+            character.shielding = false;
+        }
     }
 }
 

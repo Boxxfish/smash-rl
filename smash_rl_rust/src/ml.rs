@@ -21,8 +21,9 @@ impl Plugin for MLPlugin {
             .add_plugin(TransformPlugin)
             .add_plugin(HierarchyPlugin)
             .insert_resource(HBoxCollection::default())
-            .add_system(collect_hboxes)
-            .add_system(handle_ml_player_input.in_set(OnUpdate(AppState::Running)))
+            .add_systems(
+                (handle_ml_player_input, collect_hboxes).in_set(OnUpdate(AppState::Running)),
+            )
             .add_event::<MLPlayerActionEvent>();
     }
 }

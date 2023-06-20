@@ -50,6 +50,20 @@ pub enum AppState {
     Running,
 }
 
+/// Stores output of a step.
+#[pyclass]
+pub struct StepOutput {
+    /// HBoxes in the scene.
+    #[pyo3(get)]
+    pub hboxes: Vec<HBox>,
+    /// Whether the round is over.
+    #[pyo3(get)]
+    pub round_over: bool,
+    /// Whether the player won.
+    #[pyo3(get)]
+    pub player_won: bool,
+}
+
 /// Simple fighting game.
 #[pyclass]
 pub struct MicroFighter {
@@ -76,6 +90,8 @@ impl MicroFighter {
             .add_plugin(MoveStatesPlugin)
             .add_plugin(HitPlugin)
             .add_state::<AppState>()
+            .add_event::<ResetEvent>()
+            .add_system(handle_reset)
             .add_startup_system(setup);
         MicroFighter {
             app,
@@ -92,7 +108,7 @@ impl MicroFighter {
 
     /// Runs one step of the environment and returns hitbox and hurtbox info.
     /// The environment must not be in human mode.
-    pub fn step(&mut self, action_id: u32) -> Vec<HBox> {
+    pub fn step(&mut self, action_id: u32) -> StepOutput {
         if self.first_step {
             self.app.setup();
             self.first_step = false;
@@ -100,8 +116,49 @@ impl MicroFighter {
         self.app.world.send_event(MLPlayerActionEvent { action_id });
         self.app.update();
         let world = &self.app.world;
+
+        let events = world.get_resource::<Events<RoundOverEvent>>().unwrap();
+        let mut ev_round_over = events.get_reader();
+        let (round_over, player_won) = if let Some(ev) = ev_round_over.iter(events).next() {
+            let player_won = ev.player_won;
+            (true, player_won)
+        } else {
+            (false, false)
+        };
+
         let hbox_coll = world.get_resource::<HBoxCollection>().unwrap();
-        hbox_coll.hboxes.clone()
+        StepOutput {
+            hboxes: hbox_coll.hboxes.clone(),
+            round_over,
+            player_won,
+        }
+    }
+
+    /// Resets the environment.
+    pub fn reset(&mut self) -> StepOutput {
+        if self.first_step {
+            self.app.setup();
+            self.first_step = false;
+        }
+        self.app.world.send_event(ResetEvent);
+        self.app.update();
+        let world = &self.app.world;
+
+        let events = world.get_resource::<Events<RoundOverEvent>>().unwrap();
+        let mut ev_round_over = events.get_reader();
+        let (round_over, player_won) = if let Some(ev) = ev_round_over.iter(events).next() {
+            let player_won = ev.player_won;
+            (true, player_won)
+        } else {
+            (false, false)
+        };
+
+        let hbox_coll = world.get_resource::<HBoxCollection>().unwrap();
+        StepOutput {
+            hboxes: hbox_coll.hboxes.clone(),
+            round_over,
+            player_won,
+        }
     }
 
     /// Returns the internal screen size.
@@ -114,7 +171,7 @@ impl MicroFighter {
 #[derive(Component)]
 pub struct Floor;
 
-fn setup(mut commands: Commands, mut app_state: ResMut<NextState<AppState>>) {
+fn setup(mut commands: Commands, mut ev_reset: EventWriter<ResetEvent>) {
     commands.spawn(Camera2dBundle::default());
     // Floor
     commands.spawn((
@@ -126,42 +183,9 @@ fn setup(mut commands: Commands, mut app_state: ResMut<NextState<AppState>>) {
             Group::from_bits(FLOOR_COLL_FILTER).unwrap(),
         ),
     ));
-    // Player
-    let p_floor_collider = commands
-        .spawn((
-            Collider::cuboid(8.0, 4.0),
-            TransformBundle::from(Transform::from_xyz(0.0, -30.0, 0.0)),
-            ActiveEvents::COLLISION_EVENTS,
-            CollisionGroups::new(
-                Group::from_bits(PLAYER_COLL_GROUP).unwrap(),
-                Group::from_bits(PLAYER_COLL_FILTER).unwrap(),
-            ),
-        ))
-        .id();
-    let mut p_bundle = CharBundle::default();
-    p_bundle.character.floor_collider = Some(p_floor_collider);
-    commands
-        .spawn((Player::default(), p_bundle))
-        .add_child(p_floor_collider);
-    // Bot
-    let b_floor_collider = commands
-        .spawn((
-            Collider::cuboid(8.0, 4.0),
-            TransformBundle::from(Transform::from_xyz(0.0, -30.0, 0.0)),
-            ActiveEvents::COLLISION_EVENTS,
-            CollisionGroups::new(
-                Group::from_bits(OPPONENT_COLL_GROUP).unwrap(),
-                Group::from_bits(OPPONENT_COLL_FILTER).unwrap(),
-            ),
-        ))
-        .id();
-    let mut b_bundle = CharBundle {
-        transform: TransformBundle::from(Transform::from_xyz(50.0, 0.0, 0.0)),
-        ..default()
-    };
-    b_bundle.character.floor_collider = Some(b_floor_collider);
-    commands.spawn((Bot, b_bundle)).add_child(b_floor_collider);
-    app_state.set(AppState::Running);
+
+    // All dynamic stuff gets handled by resetting
+    ev_reset.send(ResetEvent);
 }
 
 /// Handles input from the keyboard.
@@ -194,4 +218,65 @@ fn player_input(keys: Res<Input<KeyCode>>, mut player_query: Query<(&mut CharInp
     player_input.light = keys.just_pressed(KeyCode::X) && !can_heavy;
     player_input.heavy = keys.just_pressed(KeyCode::X) && can_heavy;
     player_input.special = keys.just_pressed(KeyCode::C);
+}
+
+/// Sent when the game should reset.
+pub struct ResetEvent;
+
+/// Resets the game.
+fn handle_reset(
+    mut commands: Commands,
+    mut app_state: ResMut<NextState<AppState>>,
+    mut ev_reset: EventReader<ResetEvent>,
+    player_query: Query<Entity, With<Player>>,
+    bot_query: Query<Entity, With<Bot>>,
+) {
+    for _ in ev_reset.iter() {
+        // Remove player and bot if they exist
+        if !player_query.is_empty() {
+            let player_e = player_query.single();
+            let bot_e = bot_query.single();
+            commands.entity(player_e).despawn_recursive();
+            commands.entity(bot_e).despawn_recursive();
+        }
+
+        // Add player
+        let p_floor_collider = commands
+            .spawn((
+                Collider::cuboid(8.0, 4.0),
+                TransformBundle::from(Transform::from_xyz(0.0, -30.0, 0.0)),
+                ActiveEvents::COLLISION_EVENTS,
+                CollisionGroups::new(
+                    Group::from_bits(PLAYER_COLL_GROUP).unwrap(),
+                    Group::from_bits(PLAYER_COLL_FILTER).unwrap(),
+                ),
+            ))
+            .id();
+        let mut p_bundle = CharBundle::default();
+        p_bundle.character.floor_collider = Some(p_floor_collider);
+        commands
+            .spawn((Player::default(), p_bundle))
+            .add_child(p_floor_collider);
+        // Add bot
+        let b_floor_collider = commands
+            .spawn((
+                Collider::cuboid(8.0, 4.0),
+                TransformBundle::from(Transform::from_xyz(0.0, -30.0, 0.0)),
+                ActiveEvents::COLLISION_EVENTS,
+                CollisionGroups::new(
+                    Group::from_bits(OPPONENT_COLL_GROUP).unwrap(),
+                    Group::from_bits(OPPONENT_COLL_FILTER).unwrap(),
+                ),
+            ))
+            .id();
+        let mut b_bundle = CharBundle {
+            transform: TransformBundle::from(Transform::from_xyz(50.0, 0.0, 0.0)),
+            ..default()
+        };
+        b_bundle.character.floor_collider = Some(b_floor_collider);
+        commands.spawn((Bot, b_bundle)).add_child(b_floor_collider);
+
+        // We can now run out other systems
+        app_state.set(AppState::Running);
+    }
 }
