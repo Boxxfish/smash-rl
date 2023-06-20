@@ -227,11 +227,12 @@ pub struct ResetEvent;
 fn handle_reset(
     mut commands: Commands,
     mut app_state: ResMut<NextState<AppState>>,
-    mut ev_reset: EventReader<ResetEvent>,
+    ev_reset: EventReader<ResetEvent>,
     player_query: Query<Entity, With<Player>>,
     bot_query: Query<Entity, With<Bot>>,
 ) {
-    for _ in ev_reset.iter() {
+    // This should only run once per frame
+    if !ev_reset.is_empty() {
         // Remove player and bot if they exist
         if !player_query.is_empty() {
             let player_e = player_query.single();
