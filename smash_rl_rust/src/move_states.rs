@@ -274,9 +274,10 @@ fn handle_fall(
     mut commands: Commands,
     mut ev_collision: EventReader<CollisionEvent>,
 ) {
-    for (e, char_inpt, mut vel, character) in char_query.iter_mut() {
-        let floor_e = floor_query.single();
-        for ev in ev_collision.iter() {
+    // Go to idle if touching floor
+    for ev in ev_collision.iter() {
+        for (e, _, _, character) in char_query.iter() {
+            let floor_e = floor_query.single();
             if let CollisionEvent::Started(e1, e2, _) = ev {
                 let floor_collider = character.floor_collider.unwrap();
                 if (*e1 == floor_collider || *e2 == floor_collider)
@@ -286,6 +287,10 @@ fn handle_fall(
                 }
             }
         }
+    }
+
+    // Handle moving horizontally
+    for (_, char_inpt, mut vel, _) in char_query.iter_mut() {
         if char_inpt.left {
             vel.linvel.x += -AIR_VEL;
         } else if char_inpt.right {
