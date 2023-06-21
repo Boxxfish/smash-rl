@@ -61,7 +61,7 @@ impl Default for CharBundle {
             vel: Velocity::default(),
             locked_axes: LockedAxes::ROTATION_LOCKED,
             collider: Collider::cuboid(CHAR_WIDTH / 2.0, 30.0),
-            transform: TransformBundle::from(Transform::from_xyz(-50.0, 0.0, 0.0)),
+            transform: TransformBundle::from(Transform::from_xyz(0.0, 0.0, 0.0)),
             character: Character {
                 dir: HorizontalDir::Right,
                 floor_collider: None,

@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
 use pyo3::prelude::*;
+use rand::Rng;
 
 use crate::character::*;
 use crate::hit::*;
@@ -249,6 +250,8 @@ fn handle_reset(
         }
 
         // Add player
+        let mut rng = rand::thread_rng();
+        let p_pos = rng.gen_range(-1.0..1.0) * 50.0;
         let p_floor_collider = commands
             .spawn((
                 Collider::cuboid(8.0, 4.0),
@@ -260,12 +263,16 @@ fn handle_reset(
                 ),
             ))
             .id();
-        let mut p_bundle = CharBundle::default();
+        let mut p_bundle = CharBundle {
+            transform: TransformBundle::from(Transform::from_xyz(p_pos, 0.0, 0.0)),
+            ..default()
+        };
         p_bundle.character.floor_collider = Some(p_floor_collider);
         commands
             .spawn((Player::default(), p_bundle))
             .add_child(p_floor_collider);
         // Add bot
+        let b_pos = rng.gen_range(-1.0..1.0) * 50.0;
         let b_floor_collider = commands
             .spawn((
                 Collider::cuboid(8.0, 4.0),
@@ -278,7 +285,7 @@ fn handle_reset(
             ))
             .id();
         let mut b_bundle = CharBundle {
-            transform: TransformBundle::from(Transform::from_xyz(50.0, 0.0, 0.0)),
+            transform: TransformBundle::from(Transform::from_xyz(b_pos, 0.0, 0.0)),
             ..default()
         };
         b_bundle.character.floor_collider = Some(b_floor_collider);
