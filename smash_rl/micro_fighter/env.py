@@ -44,6 +44,7 @@ class MFEnv(gym.Env):
         render_mode: Optional[str] = None,
         view_channels: Tuple[int, int, int] = (0, 1, 2),
         max_skip_frames: int = 0,
+        bot_frames: int = 4,
     ):
         """
         Args:
@@ -62,6 +63,8 @@ class MFEnv(gym.Env):
         self.action_space = gym.spaces.Discrete(8)
         self.render_mode = render_mode
         self.channels = [np.zeros([IMG_SIZE, IMG_SIZE]) for _ in range(5)]
+        self.bot_frames = bot_frames
+        self.bot_frame_stack = [np.zeros([5, IMG_SIZE, IMG_SIZE]) for _ in range(bot_frames)]
         self.max_skip_frames = max_skip_frames
         self.view_channels = view_channels
         if self.render_mode == "human":
@@ -73,12 +76,14 @@ class MFEnv(gym.Env):
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
         skip_frames = random.randrange(0, self.max_skip_frames)
-        for _  in range(skip_frames + 1):
+        for _ in range(skip_frames + 1):
             step_output = self.game.step(action)
             if step_output.round_over:
                 break
-        
-        self.channels = self.gen_channels(step_output)
+
+        self.channels = self.gen_channels(step_output, is_player=True)
+        bot_channels = self.gen_channels(step_output, is_player=False)
+        self.insert_bot_obs(np.stack(bot_channels))
 
         terminated = step_output.round_over
         reward = 0.0
@@ -91,12 +96,17 @@ class MFEnv(gym.Env):
         self, *args, seed=None, options=None
     ) -> tuple[np.ndarray, dict[str, Any]]:
         step_output = self.game.reset()
-        self.channels = self.gen_channels(step_output)
+        self.channels = self.gen_channels(step_output, is_player=True)
+        bot_channels = self.gen_channels(step_output, is_player=False)
+        self.insert_bot_obs(np.stack(bot_channels))
         return np.stack(self.channels), {}
 
-    def gen_channels(self, step_output: StepOutput) -> List[np.ndarray]:
+    def gen_channels(
+        self, step_output: StepOutput, is_player: bool = False
+    ) -> List[np.ndarray]:
         """
         Converts `step_output` into observation channels.
+        If `is_player` is not true, this will be for the bot.
         """
         hboxes = step_output.hboxes
         hit_channel = np.zeros([IMG_SIZE, IMG_SIZE])
@@ -139,7 +149,7 @@ class MFEnv(gym.Env):
             hit_channel = hit_channel * inv_box_arr + box_arr * float(hbox.is_hit)
             dmg_channel = dmg_channel * inv_box_arr + box_arr * (hbox.damage / 100)
             player_channel = player_channel * inv_box_arr + box_arr * float(
-                hbox.is_player
+                hbox.is_player == is_player
             )
             state_channel = state_channel * inv_box_arr + box_arr * (
                 int(hbox.char_state) / 8
@@ -152,6 +162,15 @@ class MFEnv(gym.Env):
             state_channel,
             box_channel,
         ]
+
+    def insert_bot_obs(self, obs: np.ndarray):
+        """
+        Inserts a new frame and cycles the bot observation.
+        Sets frame "n" to the current value of frame "n - 1", from 1 to `self.bot_frames`.
+        """
+        for i in reversed(range(1, self.bot_frames)):
+            self.bot_frame_stack[i] = self.bot_frame_stack[i - 1]
+        self.bot_frame_stack[i] = obs
 
     def render(self):
         if self.render_mode == "human":
@@ -166,3 +185,18 @@ class MFEnv(gym.Env):
             )
             pygame.display.flip()
             self.clock.tick(60)
+
+    def bot_obs(self) -> np.ndarray:
+        """
+        Non-standard method for single agent envs.
+        Returns an observation for the bot. This observation is manually frame
+        stacked.
+        """
+        return np.stack(self.bot_frame_stack)
+
+    def bot_step(self, action: int):
+        """
+        Non-standard method for single agent envs.
+        Sets the action of the bot. Should be called before `step`.
+        """
+        self.game.bot_step(action)

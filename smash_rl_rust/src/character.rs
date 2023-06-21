@@ -14,10 +14,8 @@ pub struct CharacterPlugin;
 
 impl Plugin for CharacterPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            (round_over_on_edge, bot_random_actions).in_set(OnUpdate(AppState::Running)),
-        )
-        .add_event::<RoundOverEvent>();
+        app.add_systems((round_over_on_edge, random_actions).in_set(OnUpdate(AppState::Running)))
+            .add_event::<RoundOverEvent>();
     }
 }
 
@@ -212,28 +210,33 @@ fn round_over_on_edge(
     }
 }
 
-/// Causes the bot to perform random actions.
-fn bot_random_actions(mut bot_query: Query<&mut CharInput, With<Bot>>) {
-    let mut char_input = bot_query.single_mut();
-    char_input.left = false;
-    char_input.right = false;
-    char_input.jump = false;
-    char_input.light = false;
-    char_input.heavy = false;
-    char_input.shield = false;
-    char_input.grab = false;
-    
-    let mut rng = rand::thread_rng();
-    let action = rng.gen_range(0..8);
-    match action {
-        0 => (),
-        1 => char_input.left = true,
-        2 => char_input.right = true,
-        3 => char_input.jump = true,
-        4 => char_input.light = true,
-        5 => char_input.heavy = true,
-        6 => char_input.shield = true,
-        7 => char_input.grab = true,
-        _ => unreachable!(),
+/// Indicates a character should perform random actions.
+#[derive(Component)]
+pub struct RandomActions;
+
+/// Causes a character to perform random actions.
+fn random_actions(mut char_query: Query<&mut CharInput, With<RandomActions>>) {
+    for mut char_input in char_query.iter_mut() {
+        char_input.left = false;
+        char_input.right = false;
+        char_input.jump = false;
+        char_input.light = false;
+        char_input.heavy = false;
+        char_input.shield = false;
+        char_input.grab = false;
+
+        let mut rng = rand::thread_rng();
+        let action = rng.gen_range(0..8);
+        match action {
+            0 => (),
+            1 => char_input.left = true,
+            2 => char_input.right = true,
+            3 => char_input.jump = true,
+            4 => char_input.light = true,
+            5 => char_input.heavy = true,
+            6 => char_input.shield = true,
+            7 => char_input.grab = true,
+            _ => unreachable!(),
+        }
     }
 }

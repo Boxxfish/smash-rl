@@ -38,12 +38,14 @@ eval_steps = 2  # Number of eval runs to average over.
 max_eval_steps = 100  # Max number of steps to take during each eval run.
 q_lr = 0.0001  # Learning rate of the q net.
 warmup_steps = 500  # For the first n number of steps, we will only sample randomly.
-buffer_size = 1000  # Number of elements that can be stored in the buffer.
+buffer_size = 2000  # Number of elements that can be stored in the buffer.
 target_update = 500  # Number of iterations before updating Q target.
 num_frames = 4  # Number of frames in frame stack.
 max_skip_frames = 4  # Max number of frames to skip.
 time_limit = 500  # Time limit before truncation.
+bot_update = 1000  # Number of iterations before updating
 device = torch.device("cuda")
+
 
 class QNet(nn.Module):
     def __init__(
@@ -84,17 +86,24 @@ class QNet(nn.Module):
         value = self.value(x)
         return value + advantage - advantage.mean(1, keepdim=True)
 
+
 env = SyncVectorEnv(
     [
         (
             lambda: TimeLimit(
-                FrameStack(MFEnv(max_skip_frames=max_skip_frames), num_frames), time_limit
+                FrameStack(
+                    MFEnv(max_skip_frames=max_skip_frames, bot_frames=num_frames),
+                    num_frames,
+                ),
+                time_limit,
             )
         )
         for _ in range(num_envs)
     ]
 )
-test_env = FrameStack(MFEnv(max_skip_frames=max_skip_frames), num_frames)
+test_env = FrameStack(
+    MFEnv(max_skip_frames=max_skip_frames, bot_frames=num_frames), num_frames
+)
 
 # Argument parsing
 parser = ArgumentParser()
@@ -110,12 +119,25 @@ if args.eval:
     assert isinstance(act_space, gym.spaces.Discrete)
     q_net = QNet(torch.Size(obs_space.shape), int(act_space.n))
     q_net.load_state_dict(torch.load("temp/q_net.pt"))
-    test_env = FrameStack(MFEnv(max_skip_frames=max_skip_frames, render_mode="human", view_channels=(0, 2, 4)), num_frames)
+    test_env = FrameStack(
+        MFEnv(
+            max_skip_frames=max_skip_frames,
+            render_mode="human",
+            view_channels=(0, 2, 4),
+        ),
+        num_frames,
+    )
     with torch.no_grad():
         reward_total = 0.0
         obs_, info = test_env.reset()
         eval_obs = torch.from_numpy(np.array(obs_)).float()
         while True:
+            bot_q_vals = q_net(
+                torch.from_numpy(test_env.bot_obs()).float().unsqueeze(0)
+            ).squeeze()
+            bot_action = bot_q_vals.argmax(0).item()
+            test_env.bot_step(bot_action)
+
             q_vals = q_net(eval_obs.unsqueeze(0)).squeeze()
             action = q_vals.argmax(0).item()
             obs_, reward, eval_done, eval_trunc, _ = test_env.step(action)
@@ -154,6 +176,9 @@ q_net_target = copy.deepcopy(q_net)
 q_net_target.to(device)
 q_opt = torch.optim.Adam(q_net.parameters(), lr=q_lr)
 
+# Bot Q network
+bot_q_net = copy.deepcopy(q_net)
+
 # A replay buffer stores experience collected over all sampling runs
 buffer = ReplayBuffer(
     torch.Size(obs_space.shape),
@@ -169,6 +194,12 @@ for step in tqdm(range(iterations), position=0):
     # Collect experience
     with torch.no_grad():
         for _ in range(train_steps):
+            bot_q_vals = bot_q_net(
+                torch.from_numpy(test_env.bot_obs()).float().unsqueeze(0)
+            ).squeeze()
+            bot_action = bot_q_vals.argmax(0).item()
+            test_env.bot_step(bot_action)
+
             if (
                 random.random() < q_epsilon * max(1.0 - percent_done, 0.05)
                 or step < warmup_steps
@@ -217,6 +248,12 @@ for step in tqdm(range(iterations), position=0):
                 steps_taken = 0
                 score = 0
                 for _ in range(max_eval_steps):
+                    bot_q_vals = bot_q_net(
+                        torch.from_numpy(test_env.bot_obs()).float().unsqueeze(0)
+                    ).squeeze()
+                    bot_action = bot_q_vals.argmax(0).item()
+                    test_env.bot_step(bot_action)
+
                     q_vals = q_net(eval_obs.unsqueeze(0)).squeeze()
                     action = q_vals.argmax(0).item()
                     pred_reward_total += (
@@ -243,6 +280,10 @@ for step in tqdm(range(iterations), position=0):
         # Update Q target
         if (step + 1) % target_update == 0:
             q_net_target.load_state_dict(q_net.state_dict())
+
+        # Update bot Q net
+        if (step + 1) % bot_update == 0:
+            bot_q_net.load_state_dict(q_net.state_dict())
 
         # Save
         if (step + 1) % 100 == 0:

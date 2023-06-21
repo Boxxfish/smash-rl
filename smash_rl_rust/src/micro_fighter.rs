@@ -6,6 +6,7 @@ use crate::character::*;
 use crate::hit::*;
 use crate::ml::HBox;
 use crate::ml::HBoxCollection;
+use crate::ml::MLBotActionEvent;
 use crate::ml::MLPlayerActionEvent;
 use crate::ml::MLPlugin;
 use crate::move_states::*;
@@ -132,6 +133,12 @@ impl MicroFighter {
             round_over,
             player_won,
         }
+    }
+
+    /// Sends the bot's action this step.
+    /// The environment must not be in human mode.
+    pub fn bot_step(&mut self, action_id: u32) {
+        self.app.world.send_event(MLBotActionEvent { action_id });
     }
 
     /// Resets the environment.

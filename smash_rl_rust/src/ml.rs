@@ -22,9 +22,10 @@ impl Plugin for MLPlugin {
             .add_plugin(HierarchyPlugin)
             .insert_resource(HBoxCollection::default())
             .add_systems(
-                (handle_ml_player_input, collect_hboxes).in_set(OnUpdate(AppState::Running)),
+                (handle_ml_player_input, handle_ml_bot_input, collect_hboxes).in_set(OnUpdate(AppState::Running)),
             )
-            .add_event::<MLPlayerActionEvent>();
+            .add_event::<MLPlayerActionEvent>()
+            .add_event::<MLBotActionEvent>();
     }
 }
 
@@ -233,6 +234,49 @@ fn handle_ml_player_input(
             5 => player_inpt.heavy = true,
             6 => player_inpt.shield = true,
             7 => player_inpt.grab = true,
+            _ => unreachable!(),
+        }
+    }
+}
+
+/// Event indicating the ML bot has taken an action.
+/// 0. Do nothing.
+/// 1. Left.
+/// 2. Right.
+/// 3. Jump.
+/// 4. Light.
+/// 5. Heavy.
+/// 6. Shield.
+/// 7. Grab.
+pub struct MLBotActionEvent {
+    pub action_id: u32,
+}
+
+/// Process the ML bot's input.
+fn handle_ml_bot_input(
+    mut ev_ml_bot_action: EventReader<MLBotActionEvent>,
+    mut bot_query: Query<&mut CharInput, With<Bot>>,
+) {
+    // Reset bot input
+    let mut bot_inpt = bot_query.single_mut();
+    bot_inpt.left = false;
+    bot_inpt.right = false;
+    bot_inpt.jump = false;
+    bot_inpt.light = false;
+    bot_inpt.heavy = false;
+    bot_inpt.shield = false;
+    bot_inpt.grab = false;
+
+    for ev in ev_ml_bot_action.iter() {
+        match ev.action_id {
+            0 => (),
+            1 => bot_inpt.left = true,
+            2 => bot_inpt.right = true,
+            3 => bot_inpt.jump = true,
+            4 => bot_inpt.light = true,
+            5 => bot_inpt.heavy = true,
+            6 => bot_inpt.shield = true,
+            7 => bot_inpt.grab = true,
             _ => unreachable!(),
         }
     }
