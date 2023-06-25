@@ -90,7 +90,7 @@ class MFEnv(gym.Env):
         if terminated:
             reward = 1.0 if step_output.player_won else -1.0
 
-        return np.stack(self.channels), reward, False, terminated, {}
+        return np.stack(self.channels), reward, terminated, False, {}
 
     def reset(
         self, *args, seed=None, options=None
