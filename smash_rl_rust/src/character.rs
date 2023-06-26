@@ -110,7 +110,7 @@ pub struct CharInput {
 }
 
 /// Stores character attributes.
-#[derive(Component)]
+#[derive(Component, Clone, Copy)]
 pub struct CharAttrs {
     /// Height of a jump, in pixels.
     pub jump_height: u32,

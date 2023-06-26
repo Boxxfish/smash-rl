@@ -33,13 +33,13 @@ pub enum HitType {
 }
 
 /// Denotes that the entity is a hitbox.
-#[derive(Component)]
+#[derive(Component, Clone)]
 pub struct Hit {
     pub damage: u32,
     pub direction: Vec2,
     pub chars_hit: Vec<Entity>,
     pub owner: Entity,
-    hit_type: HitType,
+    pub hit_type: HitType,
 }
 
 /// Denotes a projectile.

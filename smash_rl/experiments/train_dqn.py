@@ -47,6 +47,12 @@ bot_update = 1000  # Number of iterations before updating
 device = torch.device("cuda")
 
 
+# Argument parsing
+parser = ArgumentParser()
+parser.add_argument("--eval", action="store_true")
+parser.add_argument("--resume", action="store_true")
+args = parser.parse_args()
+
 class QNet(nn.Module):
     def __init__(
         self,
@@ -104,11 +110,6 @@ env = SyncVectorEnv(
 test_env = FrameStack(
     MFEnv(max_skip_frames=max_skip_frames, bot_frames=num_frames), num_frames
 )
-
-# Argument parsing
-parser = ArgumentParser()
-parser.add_argument("--eval", action="store_true")
-args = parser.parse_args()
 
 # If evaluating, load the latest policy
 if args.eval:

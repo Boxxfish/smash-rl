@@ -1,14 +1,14 @@
-use bevy::prelude::*;
+use bevy::{math::Vec3Swizzles, prelude::*};
 use bevy_rapier2d::prelude::*;
 use pyo3::prelude::*;
 
 use crate::{
     character::{Bot, CharAttrs, CharInput, Character, Player, CHAR_WIDTH},
-    hit::Hit,
+    hit::{Hit, Projectile},
     micro_fighter::AppState,
     move_states::{
         GrabState, HeavyAttackRecoveryState, HeavyAttackStartupState, HitstunState,
-        LightAttackRecoveryState, LightAttackStartupState, ShieldState,
+        LightAttackRecoveryState, LightAttackStartupState, ShieldState, StateTimer,
     },
 };
 
@@ -21,11 +21,20 @@ impl Plugin for MLPlugin {
             .add_plugin(TransformPlugin)
             .add_plugin(HierarchyPlugin)
             .insert_resource(HBoxCollection::default())
+            .insert_resource(GameState::default())
             .add_systems(
-                (handle_ml_player_input, handle_ml_bot_input, collect_hboxes).in_set(OnUpdate(AppState::Running)),
+                (
+                    handle_ml_player_input,
+                    handle_ml_bot_input,
+                    collect_hboxes,
+                    update_game_state,
+                    load_game_state,
+                )
+                    .in_set(OnUpdate(AppState::Running)),
             )
             .add_event::<MLPlayerActionEvent>()
-            .add_event::<MLBotActionEvent>();
+            .add_event::<MLBotActionEvent>()
+            .add_event::<LoadStateEvent>();
     }
 }
 
@@ -197,14 +206,7 @@ fn collect_hboxes(
 }
 
 /// Event indicating the ML player has taken an action.
-/// 0. Do nothing.
-/// 1. Left.
-/// 2. Right.
-/// 3. Jump.
-/// 4. Light.
-/// 5. Heavy.
-/// 6. Shield.
-/// 7. Grab.
+/// See gym definition for what action_id corresponds to.
 pub struct MLPlayerActionEvent {
     pub action_id: u32,
 }
@@ -223,6 +225,7 @@ fn handle_ml_player_input(
     player_inpt.heavy = false;
     player_inpt.shield = false;
     player_inpt.grab = false;
+    player_inpt.special = false;
 
     for ev in ev_ml_player_action.iter() {
         match ev.action_id {
@@ -234,20 +237,14 @@ fn handle_ml_player_input(
             5 => player_inpt.heavy = true,
             6 => player_inpt.shield = true,
             7 => player_inpt.grab = true,
+            8 => player_inpt.special = true,
             _ => unreachable!(),
         }
     }
 }
 
 /// Event indicating the ML bot has taken an action.
-/// 0. Do nothing.
-/// 1. Left.
-/// 2. Right.
-/// 3. Jump.
-/// 4. Light.
-/// 5. Heavy.
-/// 6. Shield.
-/// 7. Grab.
+/// See gym definition for what action_id corresponds to.
 pub struct MLBotActionEvent {
     pub action_id: u32,
 }
@@ -266,6 +263,7 @@ fn handle_ml_bot_input(
     bot_inpt.heavy = false;
     bot_inpt.shield = false;
     bot_inpt.grab = false;
+    bot_inpt.special = false;
 
     for ev in ev_ml_bot_action.iter() {
         match ev.action_id {
@@ -277,7 +275,144 @@ fn handle_ml_bot_input(
             5 => bot_inpt.heavy = true,
             6 => bot_inpt.shield = true,
             7 => bot_inpt.grab = true,
+            8 => bot_inpt.special = true,
             _ => unreachable!(),
         }
+    }
+}
+
+/// Stores the current state of the game.
+/// Useful for loading and saving for MCTS.
+#[derive(Resource, Default)]
+pub struct GameState {
+    pub player_state: Option<CharGameState>,
+    pub opponent_state: Option<CharGameState>,
+    pub hits: Vec<HitState>,
+}
+
+/// Stores the current state of a character.
+pub struct CharGameState {
+    pub pos: Vec2,
+    pub vel: Vec2,
+    // This will have to be manually computed
+    // pub acc: Vec2,
+    pub damage: u32,
+    pub state: CharState,
+    pub attrs: CharAttrs,
+    pub frame_counter: u32,
+}
+
+/// Stores the state of a hit.
+pub struct HitState {
+    pub hit: Hit,
+    pub projectile: bool,
+    pub pos: Vec2,
+    pub extents: Vec2,
+}
+
+/// Items in the character query when saving state.
+type CharQueryItems<'a> = (
+    &'a GlobalTransform,
+    &'a Character,
+    &'a CharAttrs,
+    &'a Velocity,
+    &'a StateTimer,
+    Option<&'a HeavyAttackStartupState>,
+    Option<&'a HeavyAttackRecoveryState>,
+    Option<&'a LightAttackStartupState>,
+    Option<&'a LightAttackRecoveryState>,
+    Option<&'a GrabState>,
+    Option<&'a ShieldState>,
+    Option<&'a HitstunState>,
+);
+
+/// Updates the current game state resource.
+fn update_game_state(
+    mut game_state: ResMut<GameState>,
+    char_query: Query<CharQueryItems>,
+    player_query: Query<Entity, With<Player>>,
+    bot_query: Query<Entity, With<Bot>>,
+    hit_query: Query<(&Hit, &Transform, &Collider, Option<&Projectile>)>,
+) {
+    // Store character data
+    let player_state = extract_char_state(player_query.single(), &char_query);
+    let opponent_state = extract_char_state(bot_query.single(), &char_query);
+
+    // Store all hits
+    let mut hits = Vec::new();
+    for (hit, transform, collider, projectile) in hit_query.iter() {
+        let hit_state = HitState {
+            hit: hit.clone(),
+            projectile: projectile.is_some(),
+            pos: transform.translation.xy(),
+            extents: collider.as_cuboid().unwrap().half_extents(),
+        };
+        hits.push(hit_state);
+    }
+
+    game_state.player_state = Some(player_state);
+    game_state.opponent_state = Some(opponent_state);
+    game_state.hits = hits;
+}
+
+/// Helper function for getting character state from a query.
+fn extract_char_state(char_e: Entity, char_query: &Query<CharQueryItems>) -> CharGameState {
+    let (
+        glob_transform,
+        character,
+        attrs,
+        velocity,
+        state_timer,
+        heavy_startup,
+        heavy_recovery,
+        light_startup,
+        light_recovery,
+        grab,
+        shield,
+        hitstun,
+    ) = char_query.get(char_e).unwrap();
+
+    let pos = glob_transform.translation().xy();
+    let vel = velocity.linvel;
+    let damage = character.damage;
+    let state = if heavy_startup.is_some() {
+        CharState::StartupHeavy
+    } else if heavy_recovery.is_some() {
+        CharState::RecoveryHeavy
+    } else if light_startup.is_some() {
+        CharState::StartupLight
+    } else if light_recovery.is_some() {
+        CharState::RecoveryLight
+    } else if grab.is_some() {
+        CharState::Grab
+    } else if shield.is_some() {
+        CharState::Shield
+    } else if hitstun.is_some() {
+        CharState::Hitstun
+    } else {
+        CharState::Other
+    };
+    let attrs = *attrs;
+    let frame_counter = state_timer.frames;
+
+    CharGameState {
+        pos,
+        vel,
+        damage,
+        state,
+        attrs,
+        frame_counter,
+    }
+}
+
+/// Causes the game to load the state given.
+pub struct LoadStateEvent {
+    pub game_state: GameState,
+}
+
+/// Loads the game state.
+fn load_game_state(mut ev_load_state: EventReader<LoadStateEvent>, mut commands: Commands) {
+    for ev in ev_load_state.iter() {
+        let game_state = &ev.game_state;
     }
 }
