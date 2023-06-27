@@ -37,7 +37,6 @@ pub struct Character {
 /// Components for characters.
 #[derive(Bundle)]
 pub struct CharBundle {
-    pub state: FallState,
     pub state_timer: StateTimer,
     pub attrs: CharAttrs,
     pub input: CharInput,
@@ -54,7 +53,6 @@ pub struct CharBundle {
 impl Default for CharBundle {
     fn default() -> Self {
         Self {
-            state: FallState,
             attrs: CharAttrs::default(),
             input: CharInput::default(),
             rigidbody: RigidBody::Dynamic,

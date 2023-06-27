@@ -5,8 +5,10 @@ use rand::Rng;
 
 use crate::character::*;
 use crate::hit::*;
+use crate::ml::GameState;
 use crate::ml::HBox;
 use crate::ml::HBoxCollection;
+use crate::ml::LoadStateEvent;
 use crate::ml::MLBotActionEvent;
 use crate::ml::MLPlayerActionEvent;
 use crate::ml::MLPlugin;
@@ -64,6 +66,9 @@ pub struct StepOutput {
     /// Whether the player won.
     #[pyo3(get)]
     pub player_won: bool,
+    /// The state of the game.
+    #[pyo3(get)]
+    pub game_state: GameState,
 }
 
 /// Simple fighting game.
@@ -108,7 +113,7 @@ impl MicroFighter {
         self.app.run();
     }
 
-    /// Runs one step of the environment and returns hitbox and hurtbox info.
+    /// Runs one step of the environment and returns game info.
     /// The environment must not be in human mode.
     pub fn step(&mut self, action_id: u32) -> StepOutput {
         if self.first_step {
@@ -129,10 +134,12 @@ impl MicroFighter {
         };
 
         let hbox_coll = world.get_resource::<HBoxCollection>().unwrap();
+        let game_state = world.get_resource::<GameState>().unwrap().clone();
         StepOutput {
             hboxes: hbox_coll.hboxes.clone(),
             round_over,
             player_won,
+            game_state,
         }
     }
 
@@ -162,11 +169,21 @@ impl MicroFighter {
         };
 
         let hbox_coll = world.get_resource::<HBoxCollection>().unwrap();
+        let game_state = world.get_resource::<GameState>().unwrap().clone();
         StepOutput {
             hboxes: hbox_coll.hboxes.clone(),
             round_over,
             player_won,
+            game_state,
         }
+    }
+
+    /// Loads the given state.
+    pub fn load_state(&mut self, state: GameState) {
+        self.app.world.send_event(LoadStateEvent {
+            game_state: state,
+        });
+        self.app.update();
     }
 
     /// Returns the internal screen size.
@@ -269,7 +286,7 @@ fn handle_reset(
         };
         p_bundle.character.floor_collider = Some(p_floor_collider);
         commands
-            .spawn((Player::default(), p_bundle))
+            .spawn((Player::default(), FallState, p_bundle))
             .add_child(p_floor_collider);
         // Add bot
         let b_pos = rng.gen_range(-1.0..1.0) * 50.0;
@@ -289,9 +306,64 @@ fn handle_reset(
             ..default()
         };
         b_bundle.character.floor_collider = Some(b_floor_collider);
-        commands.spawn((Bot, b_bundle)).add_child(b_floor_collider);
+        commands
+            .spawn((Bot, FallState, b_bundle))
+            .add_child(b_floor_collider);
 
         // We can now run out other systems
         app_state.set(AppState::Running);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rand::Rng;
+
+    use super::MicroFighter;
+
+    /// Tests that states can be deterministically restored.
+    #[test]
+    fn restore_state() {
+        let mut micro_fighter = MicroFighter::new(false);
+        let mut rng = rand::thread_rng();
+        for _ in 0..5 {
+            let before_moves: Vec<u32> = (0..10).map(|_| rng.gen_range(0..8)).collect();
+            let after_moves: Vec<u32> = (0..10).map(|_| rng.gen_range(0..8)).collect();
+            micro_fighter.reset();
+            // Run the environment a couple steps
+            let mut output = None;
+            for mv in &before_moves {
+                output = Some(micro_fighter.step(*mv));
+            }
+            let state = output.unwrap().game_state;
+            // Collect data after moving a couple more steps
+            let mut output = None;
+            for mv in &after_moves {
+                output = Some(micro_fighter.step(*mv));
+            }
+            let output = output.unwrap();
+            // Reload state and run same steps
+            micro_fighter.load_state(state);
+            let mut new_output = None;
+            for mv in &after_moves {
+                new_output = Some(micro_fighter.step(*mv));
+            }
+            let new_output = new_output.unwrap();
+            // Check that both outputs match
+            assert_eq!(output.round_over, new_output.round_over);
+            assert_eq!(output.player_won, new_output.player_won);
+            assert_eq!(output.hboxes.len(), new_output.hboxes.len());
+            for (h1, h2) in output.hboxes.iter().zip(&new_output.hboxes) {
+                assert_eq!(h1.angle, h2.angle);
+                assert_eq!(h1.char_state, h2.char_state);
+                assert_eq!(h1.damage, h2.damage);
+                assert_eq!(h1.is_hit, h2.is_hit);
+                assert_eq!(h1.is_player, h2.is_player);
+                assert_eq!(h1.x, h2.x);
+                assert_eq!(h1.y, h2.y);
+                assert_eq!(h1.w, h2.w);
+                assert_eq!(h1.h, h2.h);
+            }
+        }
     }
 }

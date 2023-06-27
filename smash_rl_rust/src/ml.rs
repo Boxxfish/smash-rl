@@ -3,9 +3,11 @@ use bevy_rapier2d::prelude::*;
 use pyo3::prelude::*;
 
 use crate::{
-    character::{Bot, CharAttrs, CharInput, Character, Player, CHAR_WIDTH},
+    character::{Bot, CharAttrs, CharBundle, CharInput, Character, Player, CHAR_WIDTH},
     hit::{Hit, Projectile},
-    micro_fighter::AppState,
+    micro_fighter::{
+        AppState, OPPONENT_COLL_FILTER, OPPONENT_COLL_GROUP, PLAYER_COLL_FILTER, PLAYER_COLL_GROUP,
+    },
     move_states::{
         GrabState, HeavyAttackRecoveryState, HeavyAttackStartupState, HitstunState,
         LightAttackRecoveryState, LightAttackStartupState, ShieldState, StateTimer,
@@ -22,6 +24,7 @@ impl Plugin for MLPlugin {
             .add_plugin(HierarchyPlugin)
             .insert_resource(HBoxCollection::default())
             .insert_resource(GameState::default())
+            .configure_set(MLBaseSet::MLWork.after(CoreSet::Update))
             .add_systems(
                 (
                     handle_ml_player_input,
@@ -30,12 +33,21 @@ impl Plugin for MLPlugin {
                     update_game_state,
                     load_game_state,
                 )
+                    .in_base_set(MLBaseSet::MLWork)
                     .in_set(OnUpdate(AppState::Running)),
             )
             .add_event::<MLPlayerActionEvent>()
             .add_event::<MLBotActionEvent>()
             .add_event::<LoadStateEvent>();
     }
+}
+
+/// Base set for ML stuff.
+#[derive(Debug, Hash, PartialEq, Eq, Clone, SystemSet)]
+#[system_set(base)]
+enum MLBaseSet {
+    /// Runs after CoreSet::Update.
+    MLWork,
 }
 
 /// Information for both hitboxes and hurtboxes.
@@ -76,7 +88,7 @@ pub struct HBox {
 /// State of the character.
 /// Removes some of the partial observiability.
 #[pyclass]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum CharState {
     StartupHeavy,
     RecoveryHeavy,
@@ -283,7 +295,8 @@ fn handle_ml_bot_input(
 
 /// Stores the current state of the game.
 /// Useful for loading and saving for MCTS.
-#[derive(Resource, Default)]
+#[pyclass]
+#[derive(Resource, Default, Clone)]
 pub struct GameState {
     pub player_state: Option<CharGameState>,
     pub opponent_state: Option<CharGameState>,
@@ -291,6 +304,7 @@ pub struct GameState {
 }
 
 /// Stores the current state of a character.
+#[derive(Clone)]
 pub struct CharGameState {
     pub pos: Vec2,
     pub vel: Vec2,
@@ -303,6 +317,7 @@ pub struct CharGameState {
 }
 
 /// Stores the state of a hit.
+#[derive(Clone)]
 pub struct HitState {
     pub hit: Hit,
     pub projectile: bool,
@@ -411,8 +426,68 @@ pub struct LoadStateEvent {
 }
 
 /// Loads the game state.
-fn load_game_state(mut ev_load_state: EventReader<LoadStateEvent>, mut commands: Commands) {
+fn load_game_state(
+    mut ev_load_state: EventReader<LoadStateEvent>,
+    player_query: Query<Entity, With<Player>>,
+    bot_query: Query<Entity, With<Bot>>,
+    mut commands: Commands,
+) {
     for ev in ev_load_state.iter() {
-        let game_state = &ev.game_state;
+        // Remove player and bot if they exist
+        if !player_query.is_empty() {
+            let player_e = player_query.single();
+            let bot_e = bot_query.single();
+            commands.entity(player_e).despawn_recursive();
+            commands.entity(bot_e).despawn_recursive();
+        }
+
+        // Add player
+        let player_state = ev.game_state.player_state.as_ref().unwrap();
+        let p_floor_collider = commands
+            .spawn((
+                Collider::cuboid(8.0, 4.0),
+                TransformBundle::from(Transform::from_xyz(0.0, -30.0, 0.0)),
+                ActiveEvents::COLLISION_EVENTS,
+                CollisionGroups::new(
+                    Group::from_bits(PLAYER_COLL_GROUP).unwrap(),
+                    Group::from_bits(PLAYER_COLL_FILTER).unwrap(),
+                ),
+            ))
+            .id();
+        let mut p_bundle = CharBundle {
+            transform: TransformBundle::from(Transform::from_xyz(
+                player_state.pos.x,
+                player_state.pos.y,
+                0.0,
+            )),
+            ..default()
+        };
+        p_bundle.character.floor_collider = Some(p_floor_collider);
+        commands
+            .spawn((Player::default(), p_bundle))
+            .add_child(p_floor_collider);
+        // Add bot
+        let bot_state = ev.game_state.opponent_state.as_ref().unwrap();
+        let b_floor_collider = commands
+            .spawn((
+                Collider::cuboid(8.0, 4.0),
+                TransformBundle::from(Transform::from_xyz(0.0, -30.0, 0.0)),
+                ActiveEvents::COLLISION_EVENTS,
+                CollisionGroups::new(
+                    Group::from_bits(OPPONENT_COLL_GROUP).unwrap(),
+                    Group::from_bits(OPPONENT_COLL_FILTER).unwrap(),
+                ),
+            ))
+            .id();
+        let mut b_bundle = CharBundle {
+            transform: TransformBundle::from(Transform::from_xyz(
+                bot_state.pos.x,
+                bot_state.pos.y,
+                0.0,
+            )),
+            ..default()
+        };
+        b_bundle.character.floor_collider = Some(b_floor_collider);
+        commands.spawn((Bot, b_bundle)).add_child(b_floor_collider);
     }
 }
