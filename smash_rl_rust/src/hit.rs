@@ -44,7 +44,7 @@ pub struct Hit {
 
 /// Denotes a projectile.
 /// Doesn't do any damage by itself.
-#[derive(Component)]
+#[derive(Component, Clone)]
 pub struct Projectile {
     pub frames_left: u32,
     pub speed: u32,

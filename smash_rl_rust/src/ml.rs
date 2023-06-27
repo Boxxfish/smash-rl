@@ -24,7 +24,11 @@ impl Plugin for MLPlugin {
             .add_plugin(HierarchyPlugin)
             .insert_resource(HBoxCollection::default())
             .insert_resource(GameState::default())
-            .configure_set(MLBaseSet::MLWork.after(CoreSet::Update))
+            .configure_set(
+                MLBaseSet::MLWork
+                    .after(CoreSet::Update)
+                    .run_if(in_state(AppState::Running)),
+            )
             .add_systems(
                 (
                     handle_ml_player_input,
@@ -33,8 +37,7 @@ impl Plugin for MLPlugin {
                     update_game_state,
                     load_game_state,
                 )
-                    .in_base_set(MLBaseSet::MLWork)
-                    .in_set(OnUpdate(AppState::Running)),
+                    .in_base_set(MLBaseSet::MLWork),
             )
             .add_event::<MLPlayerActionEvent>()
             .add_event::<MLBotActionEvent>()
@@ -320,7 +323,7 @@ pub struct CharGameState {
 #[derive(Clone)]
 pub struct HitState {
     pub hit: Hit,
-    pub projectile: bool,
+    pub projectile: Option<Projectile>,
     pub pos: Vec2,
     pub extents: Vec2,
 }
@@ -358,7 +361,7 @@ fn update_game_state(
     for (hit, transform, collider, projectile) in hit_query.iter() {
         let hit_state = HitState {
             hit: hit.clone(),
-            projectile: projectile.is_some(),
+            projectile: projectile.cloned(),
             pos: transform.translation.xy(),
             extents: collider.as_cuboid().unwrap().half_extents(),
         };
@@ -433,13 +436,20 @@ fn load_game_state(
     mut commands: Commands,
 ) {
     for ev in ev_load_state.iter() {
-        // Remove player and bot if they exist
-        if !player_query.is_empty() {
+        let (player_e, bot_e) = if !player_query.is_empty() {
+            // Remove player and bot children if they exist
             let player_e = player_query.single();
             let bot_e = bot_query.single();
-            commands.entity(player_e).despawn_recursive();
-            commands.entity(bot_e).despawn_recursive();
-        }
+            commands.entity(player_e).clear_children();
+            commands.entity(bot_e).clear_children();
+            (player_e, bot_e)
+        } else {
+            // Othewise, create new player and bot
+            (
+                commands.spawn(Player::default()).id(),
+                commands.spawn(Bot).id(),
+            )
+        };
 
         // Add player
         let player_state = ev.game_state.player_state.as_ref().unwrap();
@@ -464,8 +474,10 @@ fn load_game_state(
         };
         p_bundle.character.floor_collider = Some(p_floor_collider);
         commands
-            .spawn((Player::default(), p_bundle))
+            .entity(player_e)
+            .insert(p_bundle)
             .add_child(p_floor_collider);
+
         // Add bot
         let bot_state = ev.game_state.opponent_state.as_ref().unwrap();
         let b_floor_collider = commands
@@ -488,6 +500,26 @@ fn load_game_state(
             ..default()
         };
         b_bundle.character.floor_collider = Some(b_floor_collider);
-        commands.spawn((Bot, b_bundle)).add_child(b_floor_collider);
+        commands
+            .entity(bot_e)
+            .insert(b_bundle)
+            .add_child(b_floor_collider);
+
+        // Add hits
+        for hit_state in &ev.game_state.hits {
+            let transform =
+                TransformBundle::from(Transform::from_translation(hit_state.pos.extend(0.0)));
+            let collider = Collider::cuboid(hit_state.extents.x, hit_state.extents.y);
+            let hit_e = commands
+                .spawn((hit_state.hit.clone(), collider, transform))
+                .id();
+            if hit_state.projectile.is_none() {
+                commands.entity(hit_state.hit.owner).add_child(hit_e);
+            } else {
+                commands
+                    .entity(hit_e)
+                    .insert(hit_state.projectile.clone().unwrap());
+            }
+        }
     }
 }

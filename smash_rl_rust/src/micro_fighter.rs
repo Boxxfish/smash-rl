@@ -180,9 +180,13 @@ impl MicroFighter {
 
     /// Loads the given state.
     pub fn load_state(&mut self, state: GameState) {
-        self.app.world.send_event(LoadStateEvent {
-            game_state: state,
-        });
+        if self.first_step {
+            self.app.setup();
+            self.first_step = false;
+        }
+        self.app
+            .world
+            .send_event(LoadStateEvent { game_state: state });
         self.app.update();
     }
 
@@ -258,13 +262,20 @@ fn handle_reset(
 ) {
     // This should only run once per frame
     if !ev_reset.is_empty() {
-        // Remove player and bot if they exist
-        if !player_query.is_empty() {
+        let (player_e, bot_e) = if !player_query.is_empty() {
+            // Remove player and bot children if they exist
             let player_e = player_query.single();
             let bot_e = bot_query.single();
-            commands.entity(player_e).despawn_recursive();
-            commands.entity(bot_e).despawn_recursive();
-        }
+            commands.entity(player_e).clear_children();
+            commands.entity(bot_e).clear_children();
+            (player_e, bot_e)
+        } else {
+            // Othewise, create new player and bot
+            (
+                commands.spawn(Player::default()).id(),
+                commands.spawn(Bot).id(),
+            )
+        };
 
         // Add player
         let mut rng = rand::thread_rng();
@@ -286,8 +297,10 @@ fn handle_reset(
         };
         p_bundle.character.floor_collider = Some(p_floor_collider);
         commands
-            .spawn((Player::default(), FallState, p_bundle))
+            .entity(player_e)
+            .insert((FallState, p_bundle))
             .add_child(p_floor_collider);
+
         // Add bot
         let b_pos = rng.gen_range(-1.0..1.0) * 50.0;
         let b_floor_collider = commands
@@ -307,7 +320,8 @@ fn handle_reset(
         };
         b_bundle.character.floor_collider = Some(b_floor_collider);
         commands
-            .spawn((Bot, FallState, b_bundle))
+            .entity(bot_e)
+            .insert((FallState, b_bundle))
             .add_child(b_floor_collider);
 
         // We can now run out other systems
@@ -327,8 +341,8 @@ mod tests {
         let mut micro_fighter = MicroFighter::new(false);
         let mut rng = rand::thread_rng();
         for _ in 0..5 {
-            let before_moves: Vec<u32> = (0..10).map(|_| rng.gen_range(0..8)).collect();
-            let after_moves: Vec<u32> = (0..10).map(|_| rng.gen_range(0..8)).collect();
+            let before_moves: Vec<u32> = (0..10).map(|_| rng.gen_range(0..9)).collect();
+            let after_moves: Vec<u32> = (0..10).map(|_| rng.gen_range(0..9)).collect();
             micro_fighter.reset();
             // Run the environment a couple steps
             let mut output = None;
