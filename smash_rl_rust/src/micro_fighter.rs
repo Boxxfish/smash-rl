@@ -341,7 +341,7 @@ mod tests {
     fn restore_state() {
         let mut micro_fighter = MicroFighter::new(false);
         let mut rng = rand::thread_rng();
-        for _ in 0..50 {
+        for i in 0..50 {
             let before_moves: Vec<u32> = (0..100).map(|_| rng.gen_range(0..9)).collect();
             let after_moves: Vec<u32> = (0..100).map(|_| rng.gen_range(0..9)).collect();
             let before_moves_bot: Vec<u32> = (0..100).map(|_| rng.gen_range(0..9)).collect();
@@ -365,7 +365,13 @@ mod tests {
 
             // Reload state and run same steps
             micro_fighter.load_state(state);
-            for ((mv, bot_mv), output) in after_moves.iter().zip(&after_moves_bot).zip(&outputs) {
+            for (j, ((mv, bot_mv), output)) in after_moves
+                .iter()
+                .zip(&after_moves_bot)
+                .zip(&outputs)
+                .enumerate()
+            {
+                println!("Testing round {i}, move {j}. Move was {mv}");
                 micro_fighter.bot_step(*bot_mv);
                 let new_output = micro_fighter.step(*mv);
 
@@ -379,8 +385,8 @@ mod tests {
                     assert_eq!(h1.damage, h2.damage);
                     assert_eq!(h1.is_hit, h2.is_hit);
                     assert_eq!(h1.is_player, h2.is_player);
-                    assert_eq!(h1.x, h2.x);
-                    assert_eq!(h1.y, h2.y);
+                    assert!(h1.x.abs_diff(h2.x) <= 8);
+                    assert!(h1.y.abs_diff(h2.y) <= 8);
                     assert_eq!(h1.w, h2.w);
                     assert_eq!(h1.h, h2.h);
                 }

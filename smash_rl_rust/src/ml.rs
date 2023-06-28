@@ -268,8 +268,6 @@ pub struct GameState {
 pub struct CharGameState {
     pub pos: Vec2,
     pub vel: Vec2,
-    // This will have to be manually computed
-    // pub acc: Vec2,
     pub damage: u32,
     pub state: MoveState,
     pub attrs: CharAttrs,
@@ -404,14 +402,26 @@ fn load_game_state(
                 player_state.pos.y,
                 0.0,
             )),
+            vel: Velocity::linear(player_state.vel),
+            state_timer: StateTimer {
+                frames: player_state.frame_counter,
+            },
             ..default()
         };
+        p_bundle.character.damage = player_state.damage;
         p_bundle.character.floor_collider = Some(p_floor_collider);
+        if player_state.state == MoveState::Jump {
+            p_bundle.grav_scale.0 = 0.0;
+        }
         commands
             .entity(player_e)
             .insert(p_bundle)
             .add_child(p_floor_collider);
         add_move_state(player_state.state, player_e, &mut commands);
+        if let Some(hitstun) = &player_state.hitstun {
+            commands.entity(player_e)
+            .insert(hitstun.clone());
+        }
 
         // Add bot
         let bot_state = ev.game_state.opponent_state.as_ref().unwrap();
@@ -432,14 +442,26 @@ fn load_game_state(
                 bot_state.pos.y,
                 0.0,
             )),
+            vel: Velocity::linear(bot_state.vel),
+            state_timer: StateTimer {
+                frames: bot_state.frame_counter,
+            },
             ..default()
         };
         b_bundle.character.floor_collider = Some(b_floor_collider);
+        b_bundle.character.damage = bot_state.damage;
+        if bot_state.state == MoveState::Jump {
+            b_bundle.grav_scale.0 = 0.0;
+        }
         commands
             .entity(bot_e)
             .insert(b_bundle)
             .add_child(b_floor_collider);
         add_move_state(bot_state.state, bot_e, &mut commands);
+        if let Some(hitstun) = &bot_state.hitstun {
+            commands.entity(bot_e)
+            .insert(hitstun.clone());
+        }
 
         // Add hits
         for hit_state in &ev.game_state.hits {
