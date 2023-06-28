@@ -106,6 +106,13 @@ impl HitBundle {
     }
 }
 
+/// Causes a character to go in hitstun when applied.
+#[derive(Component)]
+pub struct Hitstun {
+    /// Number of frames before recovery.
+    pub frames: u32,
+}
+
 /// Causes characters to go flying when hit.
 fn compute_hit_interactions(
     mut hit_query: Query<&mut Hit>,
@@ -157,7 +164,8 @@ fn compute_hit_interactions(
                         impulse,
                         ..default()
                     })
-                    .insert(HitstunState {
+                    .insert(HitstunState)
+                    .insert(Hitstun {
                         frames: hitstun_frames,
                     });
             }
@@ -177,7 +185,8 @@ fn compute_hit_interactions(
                         impulse,
                         ..default()
                     })
-                    .insert(HitstunState {
+                    .insert(HitstunState)
+                    .insert(Hitstun {
                         frames: hitstun_frames,
                     });
             }

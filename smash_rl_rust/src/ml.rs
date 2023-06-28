@@ -10,7 +10,7 @@ use crate::{
     },
     move_states::{
         GrabState, HeavyAttackRecoveryState, HeavyAttackStartupState, HitstunState,
-        LightAttackRecoveryState, LightAttackStartupState, ShieldState, StateTimer, MoveState, CurrentMoveState,
+        LightAttackRecoveryState, LightAttackStartupState, ShieldState, StateTimer, MoveState, CurrentMoveState, add_move_state,
     },
 };
 
@@ -406,6 +406,7 @@ fn load_game_state(
             .entity(player_e)
             .insert(p_bundle)
             .add_child(p_floor_collider);
+        add_move_state(player_state.state, player_e, &mut commands);
 
         // Add bot
         let bot_state = ev.game_state.opponent_state.as_ref().unwrap();
@@ -433,6 +434,7 @@ fn load_game_state(
             .entity(bot_e)
             .insert(b_bundle)
             .add_child(b_floor_collider);
+        add_move_state(bot_state.state, bot_e, &mut commands);
 
         // Add hits
         for hit_state in &ev.game_state.hits {

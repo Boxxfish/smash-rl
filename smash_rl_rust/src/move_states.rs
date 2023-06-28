@@ -1,12 +1,12 @@
 use std::marker::PhantomData;
 
-use pyo3::prelude::*;
 use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
+use pyo3::prelude::*;
 
 use crate::{
     character::{CharAttrs, CharInput, Character, HorizontalDir, CHAR_WIDTH},
-    hit::{Hit, HitBundle, HitType, Projectile},
+    hit::{Hit, HitBundle, HitType, Projectile, Hitstun},
     micro_fighter::{AppState, Floor, FIXED_TIMESTEP},
 };
 
@@ -162,6 +162,29 @@ impl From<u32> for MoveState {
     }
 }
 
+/// Given a MoveState, adds the appropriate state to an entity.
+pub fn add_move_state(move_state: MoveState, entity: Entity, commands: &mut Commands) {
+    let mut e_cmds = commands.get_entity(entity).unwrap();
+    match move_state {
+        MoveState::Idle => e_cmds.insert(IdleState),
+        MoveState::Run => e_cmds.insert(RunState),
+        MoveState::Jump => e_cmds.insert(JumpState),
+        MoveState::Fall => e_cmds.insert(FallState),
+        MoveState::Shield => e_cmds.insert(ShieldState),
+        MoveState::Hitstun => e_cmds.insert(HitstunState),
+        MoveState::LightAttackStartup => e_cmds.insert(LightAttackStartupState),
+        MoveState::LightAttackHit => e_cmds.insert(LightAttackHitState),
+        MoveState::LightAttackRecovery => e_cmds.insert(LightAttackRecoveryState),
+        MoveState::HeavyAttackStartup => e_cmds.insert(HeavyAttackStartupState),
+        MoveState::HeavyAttackHit => e_cmds.insert(HeavyAttackHitState),
+        MoveState::HeavyAttackRecovery => e_cmds.insert(HeavyAttackRecoveryState),
+        MoveState::SpecialAttackStartup => e_cmds.insert(SpecialAttackStartupState),
+        MoveState::SpecialAttackHit => e_cmds.insert(SpecialAttackHitState),
+        MoveState::SpecialAttackRecovery => e_cmds.insert(SpecialAttackRecoveryState),
+        MoveState::Grab => e_cmds.insert(GrabState),
+    };
+}
+
 #[derive(Component)]
 pub struct IdleState;
 #[derive(Component)]
@@ -173,10 +196,7 @@ pub struct FallState;
 #[derive(Component)]
 pub struct ShieldState;
 #[derive(Component)]
-pub struct HitstunState {
-    /// Number of frames before exiting hitstun.
-    pub frames: u32,
-}
+pub struct HitstunState;
 #[derive(Component)]
 pub struct LightAttackStartupState;
 #[derive(Component)]
@@ -220,7 +240,12 @@ impl<T: Component, const U: u32> Default for MoveStatePlugin<T, U> {
 impl<T: Component, const U: u32> Plugin for MoveStatePlugin<T, U> {
     fn build(&self, app: &mut App) {
         app.add_systems(
-            (reset_state_timer::<T>, exit_on_hitstun::<T>).in_set(OnUpdate(AppState::Running)),
+            (
+                reset_state_timer::<T>,
+                exit_on_hitstun::<T>,
+                update_move_state::<T, U>,
+            )
+                .in_set(OnUpdate(AppState::Running)),
         );
     }
 }
@@ -674,18 +699,13 @@ fn handle_grab_end(
 }
 
 fn handle_hitstun(
-    mut char_query: Query<(
-        Entity,
-        &Character,
-        &HitstunState,
-        &StateTimer,
-    )>,
+    mut char_query: Query<(Entity, &Character, &HitstunState, &Hitstun, &StateTimer)>,
     floor_query: Query<Entity, With<Floor>>,
     mut commands: Commands,
     mut ev_collision: EventReader<CollisionEvent>,
 ) {
-    for (e, character, hitstun_state, timer) in char_query.iter_mut() {
-        if timer.frames == hitstun_state.frames {
+    for (e, character, hitstun_state, hitstun, timer) in char_query.iter_mut() {
+        if timer.frames == hitstun.frames {
             // Check if on ground
             let mut on_ground = false;
             let floor_e = floor_query.single();
@@ -705,12 +725,14 @@ fn handle_hitstun(
                 commands
                     .entity(e)
                     .insert(IdleState)
-                    .remove::<HitstunState>();
+                    .remove::<HitstunState>()
+                    .remove::<Hitstun>();
             } else {
                 commands
                     .entity(e)
                     .insert(FallState)
-                    .remove::<HitstunState>();
+                    .remove::<HitstunState>()
+                    .remove::<Hitstun>();
             }
         }
     }
