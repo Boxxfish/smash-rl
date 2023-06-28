@@ -4,7 +4,7 @@ use pyo3::prelude::*;
 
 use crate::{
     character::{Bot, CharAttrs, CharBundle, CharInput, Character, Player, CHAR_WIDTH},
-    hit::{Hit, Projectile},
+    hit::{Hit, Projectile, Hitstun},
     micro_fighter::{
         AppState, OPPONENT_COLL_FILTER, OPPONENT_COLL_GROUP, PLAYER_COLL_FILTER, PLAYER_COLL_GROUP,
     },
@@ -274,6 +274,7 @@ pub struct CharGameState {
     pub state: MoveState,
     pub attrs: CharAttrs,
     pub frame_counter: u32,
+    pub hitstun: Option<Hitstun>,
 }
 
 /// Stores the state of a hit.
@@ -293,6 +294,7 @@ type CharQueryItems<'a> = (
     &'a Velocity,
     &'a StateTimer,
     &'a CurrentMoveState,
+    Option<&'a Hitstun>,
 );
 
 /// Updates the current game state resource.
@@ -333,6 +335,7 @@ fn extract_char_state(char_e: Entity, char_query: &Query<CharQueryItems>) -> Cha
         velocity,
         state_timer,
         curr_move_state,
+        hitstun,
     ) = char_query.get(char_e).unwrap();
 
     let pos = glob_transform.translation().xy();
@@ -341,6 +344,7 @@ fn extract_char_state(char_e: Entity, char_query: &Query<CharQueryItems>) -> Cha
     let attrs = *attrs;
     let frame_counter = state_timer.frames;
     let state = curr_move_state.move_state;
+    let hitstun = hitstun.cloned();
 
     CharGameState {
         pos,
@@ -349,6 +353,7 @@ fn extract_char_state(char_e: Entity, char_query: &Query<CharQueryItems>) -> Cha
         state,
         attrs,
         frame_counter,
+        hitstun,
     }
 }
 

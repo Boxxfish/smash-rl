@@ -342,10 +342,10 @@ mod tests {
         let mut micro_fighter = MicroFighter::new(false);
         let mut rng = rand::thread_rng();
         for _ in 0..50 {
-            let before_moves: Vec<u32> = (0..20).map(|_| rng.gen_range(0..9)).collect();
-            let after_moves: Vec<u32> = (0..20).map(|_| rng.gen_range(0..9)).collect();
-            let before_moves_bot: Vec<u32> = (0..20).map(|_| rng.gen_range(0..9)).collect();
-            let after_moves_bot: Vec<u32> = (0..20).map(|_| rng.gen_range(0..9)).collect();
+            let before_moves: Vec<u32> = (0..100).map(|_| rng.gen_range(0..9)).collect();
+            let after_moves: Vec<u32> = (0..100).map(|_| rng.gen_range(0..9)).collect();
+            let before_moves_bot: Vec<u32> = (0..100).map(|_| rng.gen_range(0..9)).collect();
+            let after_moves_bot: Vec<u32> = (0..100).map(|_| rng.gen_range(0..9)).collect();
             micro_fighter.reset();
 
             // Run the environment a couple steps

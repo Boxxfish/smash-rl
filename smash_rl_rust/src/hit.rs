@@ -107,7 +107,7 @@ impl HitBundle {
 }
 
 /// Causes a character to go in hitstun when applied.
-#[derive(Component)]
+#[derive(Component, Clone)]
 pub struct Hitstun {
     /// Number of frames before recovery.
     pub frames: u32,
