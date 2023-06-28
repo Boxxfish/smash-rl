@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 
+use pyo3::prelude::*;
 use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
 
@@ -63,22 +64,101 @@ impl Plugin for MoveStatesPlugin {
             )
                 .in_set(OnUpdate(AppState::Running)),
         )
-        .add_plugin(MoveStatePlugin::<IdleState>::default())
-        .add_plugin(MoveStatePlugin::<RunState>::default())
-        .add_plugin(MoveStatePlugin::<JumpState>::default())
-        .add_plugin(MoveStatePlugin::<FallState>::default())
-        .add_plugin(MoveStatePlugin::<LightAttackStartupState>::default())
-        .add_plugin(MoveStatePlugin::<LightAttackHitState>::default())
-        .add_plugin(MoveStatePlugin::<LightAttackRecoveryState>::default())
-        .add_plugin(MoveStatePlugin::<HeavyAttackStartupState>::default())
-        .add_plugin(MoveStatePlugin::<HeavyAttackHitState>::default())
-        .add_plugin(MoveStatePlugin::<HeavyAttackRecoveryState>::default())
-        .add_plugin(MoveStatePlugin::<SpecialAttackStartupState>::default())
-        .add_plugin(MoveStatePlugin::<SpecialAttackHitState>::default())
-        .add_plugin(MoveStatePlugin::<SpecialAttackRecoveryState>::default())
-        .add_plugin(MoveStatePlugin::<GrabState>::default())
-        .add_plugin(MoveStatePlugin::<ShieldState>::default())
-        .add_plugin(MoveStatePlugin::<HitstunState>::default());
+        .add_plugin(MoveStatePlugin::<IdleState, { MoveState::Idle as u32 }>::default())
+        .add_plugin(MoveStatePlugin::<RunState, { MoveState::Run as u32 }>::default())
+        .add_plugin(MoveStatePlugin::<JumpState, { MoveState::Jump as u32 }>::default())
+        .add_plugin(MoveStatePlugin::<FallState, { MoveState::Hitstun as u32 }>::default())
+        .add_plugin(MoveStatePlugin::<
+            LightAttackStartupState,
+            { MoveState::LightAttackStartup as u32 },
+        >::default())
+        .add_plugin(MoveStatePlugin::<
+            LightAttackHitState,
+            { MoveState::LightAttackHit as u32 },
+        >::default())
+        .add_plugin(MoveStatePlugin::<
+            LightAttackRecoveryState,
+            { MoveState::LightAttackRecovery as u32 },
+        >::default())
+        .add_plugin(MoveStatePlugin::<
+            HeavyAttackStartupState,
+            { MoveState::HeavyAttackStartup as u32 },
+        >::default())
+        .add_plugin(MoveStatePlugin::<
+            HeavyAttackHitState,
+            { MoveState::HeavyAttackHit as u32 },
+        >::default())
+        .add_plugin(MoveStatePlugin::<
+            HeavyAttackRecoveryState,
+            { MoveState::HeavyAttackRecovery as u32 },
+        >::default())
+        .add_plugin(MoveStatePlugin::<
+            SpecialAttackStartupState,
+            { MoveState::SpecialAttackStartup as u32 },
+        >::default())
+        .add_plugin(MoveStatePlugin::<
+            SpecialAttackHitState,
+            { MoveState::SpecialAttackHit as u32 },
+        >::default())
+        .add_plugin(MoveStatePlugin::<
+            SpecialAttackRecoveryState,
+            { MoveState::SpecialAttackRecovery as u32 },
+        >::default())
+        .add_plugin(MoveStatePlugin::<GrabState, { MoveState::Grab as u32 }>::default())
+        .add_plugin(MoveStatePlugin::<ShieldState, { MoveState::Shield as u32 }>::default())
+        .add_plugin(MoveStatePlugin::<HitstunState, { MoveState::Hitstun as u32 }>::default());
+    }
+}
+
+/// Tracks the current move state.
+#[derive(Component)]
+pub struct CurrentMoveState {
+    pub move_state: MoveState,
+}
+
+/// Enumerates states a character can be in.
+#[pyclass]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MoveState {
+    Idle = 0,
+    Run = 1,
+    Jump = 2,
+    Fall = 3,
+    Shield = 4,
+    Hitstun = 5,
+    LightAttackStartup = 6,
+    LightAttackHit = 7,
+    LightAttackRecovery = 8,
+    HeavyAttackStartup = 9,
+    HeavyAttackHit = 10,
+    HeavyAttackRecovery = 11,
+    SpecialAttackStartup = 12,
+    SpecialAttackHit = 13,
+    SpecialAttackRecovery = 14,
+    Grab = 15,
+}
+
+impl From<u32> for MoveState {
+    fn from(value: u32) -> Self {
+        match value {
+            0 => MoveState::Idle,
+            1 => MoveState::Run,
+            2 => MoveState::Jump,
+            3 => MoveState::Fall,
+            4 => MoveState::Shield,
+            5 => MoveState::Hitstun,
+            6 => MoveState::LightAttackStartup,
+            7 => MoveState::LightAttackHit,
+            8 => MoveState::LightAttackRecovery,
+            9 => MoveState::HeavyAttackStartup,
+            10 => MoveState::HeavyAttackHit,
+            11 => MoveState::HeavyAttackRecovery,
+            12 => MoveState::SpecialAttackStartup,
+            13 => MoveState::SpecialAttackHit,
+            14 => MoveState::SpecialAttackRecovery,
+            15 => MoveState::Grab,
+            _ => unimplemented!("Cannot convert this number to MoveState."),
+        }
     }
 }
 
@@ -125,11 +205,11 @@ pub struct StateTimer {
 }
 
 /// Treats the component as a move state.
-struct MoveStatePlugin<T: Component> {
+struct MoveStatePlugin<T: Component, const U: u32> {
     t: PhantomData<T>,
 }
 
-impl<T: Component> Default for MoveStatePlugin<T> {
+impl<T: Component, const U: u32> Default for MoveStatePlugin<T, U> {
     fn default() -> Self {
         Self {
             t: Default::default(),
@@ -137,7 +217,7 @@ impl<T: Component> Default for MoveStatePlugin<T> {
     }
 }
 
-impl<T: Component> Plugin for MoveStatePlugin<T> {
+impl<T: Component, const U: u32> Plugin for MoveStatePlugin<T, U> {
     fn build(&self, app: &mut App) {
         app.add_systems(
             (reset_state_timer::<T>, exit_on_hitstun::<T>).in_set(OnUpdate(AppState::Running)),
@@ -149,6 +229,15 @@ impl<T: Component> Plugin for MoveStatePlugin<T> {
 fn reset_state_timer<T: Component>(mut timer_query: Query<&mut StateTimer, Added<T>>) {
     for mut timer in timer_query.iter_mut() {
         timer.frames = 0;
+    }
+}
+
+/// Updates the current state whenever the component is added.
+fn update_move_state<T: Component, const U: u32>(
+    mut ms_query: Query<&mut CurrentMoveState, Added<T>>,
+) {
+    for mut curr_move_state in ms_query.iter_mut() {
+        curr_move_state.move_state = MoveState::from(U);
     }
 }
 
@@ -587,8 +676,6 @@ fn handle_grab_end(
 fn handle_hitstun(
     mut char_query: Query<(
         Entity,
-        &CharInput,
-        &mut Velocity,
         &Character,
         &HitstunState,
         &StateTimer,
@@ -597,7 +684,7 @@ fn handle_hitstun(
     mut commands: Commands,
     mut ev_collision: EventReader<CollisionEvent>,
 ) {
-    for (e, char_inpt, mut vel, character, hitstun_state, timer) in char_query.iter_mut() {
+    for (e, character, hitstun_state, timer) in char_query.iter_mut() {
         if timer.frames == hitstun_state.frames {
             // Check if on ground
             let mut on_ground = false;

@@ -1,15 +1,23 @@
 from typing import List
 
 
-class CharState:
-    StartupHeavy: int
-    RecoveryHeavy: int
-    StartupLight: int
-    RecoveryLight: int
-    Grab: int
+class MoveState:
+    Idle: int
+    Run: int
+    Jump: int
+    Fall: int
     Shield: int
     Hitstun: int
-    Other: int
+    LightAttackStartup: int
+    LightAttackHit: int
+    LightAttackRecovery: int
+    HeavyAttackStartup: int
+    HeavyAttackHit: int
+    HeavyAttackRecovery: int
+    SpecialAttackStartup: int
+    SpecialAttackHit: int
+    SpecialAttackRecovery: int
+    Grab: int
 
 class HBox:
     is_hit: bool
@@ -20,7 +28,7 @@ class HBox:
     angle: float
     is_player: bool
     damage: int
-    char_state: int
+    move_state: int
 
 class StepOutput:
     hboxes: List[HBox]

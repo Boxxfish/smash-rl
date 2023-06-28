@@ -10,7 +10,7 @@ use crate::{
     },
     move_states::{
         GrabState, HeavyAttackRecoveryState, HeavyAttackStartupState, HitstunState,
-        LightAttackRecoveryState, LightAttackStartupState, ShieldState, StateTimer,
+        LightAttackRecoveryState, LightAttackStartupState, ShieldState, StateTimer, MoveState, CurrentMoveState,
     },
 };
 
@@ -85,22 +85,7 @@ pub struct HBox {
     pub damage: u32,
     /// State the character currently is in.
     #[pyo3(get)]
-    pub char_state: CharState,
-}
-
-/// State of the character.
-/// Removes some of the partial observiability.
-#[pyclass]
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum CharState {
-    StartupHeavy,
-    RecoveryHeavy,
-    StartupLight,
-    RecoveryLight,
-    Grab,
-    Shield,
-    Hitstun,
-    Other,
+    pub move_state: MoveState,
 }
 
 /// Resource that stores all HBoxes.
@@ -117,13 +102,7 @@ fn collect_hboxes(
         &Character,
         &Collider,
         Option<&Player>,
-        Option<&HeavyAttackStartupState>,
-        Option<&HeavyAttackRecoveryState>,
-        Option<&LightAttackStartupState>,
-        Option<&LightAttackRecoveryState>,
-        Option<&GrabState>,
-        Option<&ShieldState>,
-        Option<&HitstunState>,
+        &CurrentMoveState,
     )>,
     hit_query: Query<(&Hit, &GlobalTransform, &Collider)>,
     player_query: Query<Entity, With<Player>>,
@@ -140,13 +119,7 @@ fn collect_hboxes(
         character,
         collider,
         player,
-        heavy_startup,
-        heavy_recovery,
-        light_startup,
-        light_recovery,
-        grab,
-        shield,
-        hitstun,
+        curr_move_state,
     ) in char_query.iter()
     {
         let transform = glob_transform.compute_transform();
@@ -158,27 +131,11 @@ fn collect_hboxes(
         let angle = 0.0;
         let is_player = player.is_some();
         let damage = character.damage;
-        let char_state = if heavy_startup.is_some() {
-            CharState::StartupHeavy
-        } else if heavy_recovery.is_some() {
-            CharState::RecoveryHeavy
-        } else if light_startup.is_some() {
-            CharState::StartupLight
-        } else if light_recovery.is_some() {
-            CharState::RecoveryLight
-        } else if grab.is_some() {
-            CharState::Grab
-        } else if shield.is_some() {
-            CharState::Shield
-        } else if hitstun.is_some() {
-            CharState::Hitstun
-        } else {
-            CharState::Other
-        };
+        let move_state = curr_move_state.move_state;
         if is_player {
-            player_state = Some(char_state);
+            player_state = Some(move_state);
         } else {
-            opp_state = Some(char_state);
+            opp_state = Some(move_state);
         }
         let hbox = HBox {
             is_hit: false,
@@ -189,7 +146,7 @@ fn collect_hboxes(
             angle,
             is_player,
             damage,
-            char_state,
+            move_state,
         };
         hbox_coll.hboxes.push(hbox);
     }
@@ -204,7 +161,7 @@ fn collect_hboxes(
         let h = (collider.half_extents().y * 2.0) as u32;
         let angle = transform.rotation.to_euler(EulerRot::XYZ).2;
         let is_player = hit.owner == player_e;
-        let char_state = if is_player { player_state } else { opp_state }.unwrap();
+        let move_state = if is_player { player_state } else { opp_state }.unwrap();
         let hbox = HBox {
             is_hit: true,
             x,
@@ -214,7 +171,7 @@ fn collect_hboxes(
             angle,
             is_player,
             damage: hit.damage,
-            char_state,
+            move_state,
         };
         hbox_coll.hboxes.push(hbox);
     }
@@ -314,7 +271,7 @@ pub struct CharGameState {
     // This will have to be manually computed
     // pub acc: Vec2,
     pub damage: u32,
-    pub state: CharState,
+    pub state: MoveState,
     pub attrs: CharAttrs,
     pub frame_counter: u32,
 }
@@ -335,13 +292,7 @@ type CharQueryItems<'a> = (
     &'a CharAttrs,
     &'a Velocity,
     &'a StateTimer,
-    Option<&'a HeavyAttackStartupState>,
-    Option<&'a HeavyAttackRecoveryState>,
-    Option<&'a LightAttackStartupState>,
-    Option<&'a LightAttackRecoveryState>,
-    Option<&'a GrabState>,
-    Option<&'a ShieldState>,
-    Option<&'a HitstunState>,
+    &'a CurrentMoveState,
 );
 
 /// Updates the current game state resource.
@@ -381,37 +332,15 @@ fn extract_char_state(char_e: Entity, char_query: &Query<CharQueryItems>) -> Cha
         attrs,
         velocity,
         state_timer,
-        heavy_startup,
-        heavy_recovery,
-        light_startup,
-        light_recovery,
-        grab,
-        shield,
-        hitstun,
+        curr_move_state,
     ) = char_query.get(char_e).unwrap();
 
     let pos = glob_transform.translation().xy();
     let vel = velocity.linvel;
     let damage = character.damage;
-    let state = if heavy_startup.is_some() {
-        CharState::StartupHeavy
-    } else if heavy_recovery.is_some() {
-        CharState::RecoveryHeavy
-    } else if light_startup.is_some() {
-        CharState::StartupLight
-    } else if light_recovery.is_some() {
-        CharState::RecoveryLight
-    } else if grab.is_some() {
-        CharState::Grab
-    } else if shield.is_some() {
-        CharState::Shield
-    } else if hitstun.is_some() {
-        CharState::Hitstun
-    } else {
-        CharState::Other
-    };
     let attrs = *attrs;
     let frame_counter = state_timer.frames;
+    let state = curr_move_state.move_state;
 
     CharGameState {
         pos,

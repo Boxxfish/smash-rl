@@ -336,47 +336,54 @@ mod tests {
     use super::MicroFighter;
 
     /// Tests that states can be deterministically restored.
+    /// Relies on law of large numbers for exhaustiveness.
     #[test]
     fn restore_state() {
         let mut micro_fighter = MicroFighter::new(false);
         let mut rng = rand::thread_rng();
-        for _ in 0..5 {
-            let before_moves: Vec<u32> = (0..10).map(|_| rng.gen_range(0..9)).collect();
-            let after_moves: Vec<u32> = (0..10).map(|_| rng.gen_range(0..9)).collect();
+        for _ in 0..50 {
+            let before_moves: Vec<u32> = (0..20).map(|_| rng.gen_range(0..9)).collect();
+            let after_moves: Vec<u32> = (0..20).map(|_| rng.gen_range(0..9)).collect();
+            let before_moves_bot: Vec<u32> = (0..20).map(|_| rng.gen_range(0..9)).collect();
+            let after_moves_bot: Vec<u32> = (0..20).map(|_| rng.gen_range(0..9)).collect();
             micro_fighter.reset();
+
             // Run the environment a couple steps
             let mut output = None;
-            for mv in &before_moves {
+            for (mv, bot_mv) in before_moves.iter().zip(&before_moves_bot) {
+                micro_fighter.bot_step(*bot_mv);
                 output = Some(micro_fighter.step(*mv));
             }
             let state = output.unwrap().game_state;
+
             // Collect data after moving a couple more steps
-            let mut output = None;
-            for mv in &after_moves {
-                output = Some(micro_fighter.step(*mv));
+            let mut outputs = Vec::new();
+            for (mv, bot_mv) in after_moves.iter().zip(&after_moves_bot) {
+                micro_fighter.bot_step(*bot_mv);
+                outputs.push(micro_fighter.step(*mv));
             }
-            let output = output.unwrap();
+
             // Reload state and run same steps
             micro_fighter.load_state(state);
-            let mut new_output = None;
-            for mv in &after_moves {
-                new_output = Some(micro_fighter.step(*mv));
-            }
-            let new_output = new_output.unwrap();
-            // Check that both outputs match
-            assert_eq!(output.round_over, new_output.round_over);
-            assert_eq!(output.player_won, new_output.player_won);
-            assert_eq!(output.hboxes.len(), new_output.hboxes.len());
-            for (h1, h2) in output.hboxes.iter().zip(&new_output.hboxes) {
-                assert_eq!(h1.angle, h2.angle);
-                assert_eq!(h1.char_state, h2.char_state);
-                assert_eq!(h1.damage, h2.damage);
-                assert_eq!(h1.is_hit, h2.is_hit);
-                assert_eq!(h1.is_player, h2.is_player);
-                assert_eq!(h1.x, h2.x);
-                assert_eq!(h1.y, h2.y);
-                assert_eq!(h1.w, h2.w);
-                assert_eq!(h1.h, h2.h);
+            for ((mv, bot_mv), output) in after_moves.iter().zip(&after_moves_bot).zip(&outputs) {
+                micro_fighter.bot_step(*bot_mv);
+                let new_output = micro_fighter.step(*mv);
+
+                // Check that both outputs match
+                assert_eq!(output.round_over, new_output.round_over);
+                assert_eq!(output.player_won, new_output.player_won);
+                assert_eq!(output.hboxes.len(), new_output.hboxes.len());
+                for (h1, h2) in output.hboxes.iter().zip(&new_output.hboxes) {
+                    assert_eq!(h1.angle, h2.angle);
+                    assert_eq!(h1.move_state, h2.move_state);
+                    assert_eq!(h1.damage, h2.damage);
+                    assert_eq!(h1.is_hit, h2.is_hit);
+                    assert_eq!(h1.is_player, h2.is_player);
+                    assert_eq!(h1.x, h2.x);
+                    assert_eq!(h1.y, h2.y);
+                    assert_eq!(h1.w, h2.w);
+                    assert_eq!(h1.h, h2.h);
+                }
             }
         }
     }

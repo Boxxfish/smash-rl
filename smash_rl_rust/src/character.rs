@@ -4,7 +4,7 @@ use rand::Rng;
 
 use crate::{
     micro_fighter::{AppState, SCREEN_SIZE},
-    move_states::{FallState, StateTimer},
+    move_states::{FallState, StateTimer, CurrentMoveState, MoveState},
 };
 
 pub const CHAR_WIDTH: f32 = 20.0;
@@ -48,6 +48,7 @@ pub struct CharBundle {
     pub transform: TransformBundle,
     pub grav_scale: GravityScale,
     pub sensor: Sensor,
+    pub curr_move_state: CurrentMoveState,
 }
 
 impl Default for CharBundle {
@@ -69,6 +70,7 @@ impl Default for CharBundle {
             grav_scale: GravityScale(10.0),
             sensor: Sensor,
             state_timer: StateTimer { frames: 0 },
+            curr_move_state: CurrentMoveState { move_state: MoveState::Idle },
         }
     }
 }
