@@ -11,6 +11,8 @@ from PIL import Image, ImageDraw  # type: ignore
 from matplotlib import pyplot as plt  # type: ignore
 import pygame
 
+from smash_rl_rust import GameState
+
 IMG_SIZE = 32
 IMG_SCALE = 4
 
@@ -37,6 +39,7 @@ class MFEnv(gym.Env):
     5. Heavy.
     6. Shield.
     7. Grab.
+    8. Special.
     """
 
     def __init__(
@@ -60,7 +63,7 @@ class MFEnv(gym.Env):
 
         self.game = MicroFighter(False)
         self.observation_space = gym.spaces.Box(0.0, 1.0, [5, IMG_SIZE, IMG_SIZE])
-        self.action_space = gym.spaces.Discrete(8)
+        self.action_space = gym.spaces.Discrete(9)
         self.render_mode = render_mode
         self.channels = [np.zeros([IMG_SIZE, IMG_SIZE]) for _ in range(5)]
         self.bot_frames = bot_frames
@@ -152,7 +155,7 @@ class MFEnv(gym.Env):
                 hbox.is_player == is_player
             )
             state_channel = state_channel * inv_box_arr + box_arr * (
-                int(hbox.char_state) / 8
+                int(hbox.move_state) / 8
             )
             box_channel = box_channel * inv_box_arr + box_arr
         return [
@@ -186,6 +189,13 @@ class MFEnv(gym.Env):
             pygame.display.flip()
             self.clock.tick(60)
 
+    def player_obs(self) -> np.ndarray:
+        """
+        Non-standard method for single agent envs.
+        Returns an observation for the player.
+        """
+        return np.stack(self.channels)
+        
     def bot_obs(self) -> np.ndarray:
         """
         Non-standard method for single agent envs.
@@ -200,3 +210,9 @@ class MFEnv(gym.Env):
         Sets the action of the bot. Should be called before `step`.
         """
         self.game.bot_step(action)
+
+    def load_state(self, state: GameState):
+        """
+        Loads a previously saved state.
+        """
+        self.game.load_state(state)

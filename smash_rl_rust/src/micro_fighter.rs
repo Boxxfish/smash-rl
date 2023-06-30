@@ -122,25 +122,7 @@ impl MicroFighter {
         }
         self.app.world.send_event(MLPlayerActionEvent { action_id });
         self.app.update();
-        let world = &self.app.world;
-
-        let events = world.get_resource::<Events<RoundOverEvent>>().unwrap();
-        let mut ev_round_over = events.get_reader();
-        let (round_over, player_won) = if let Some(ev) = ev_round_over.iter(events).next() {
-            let player_won = ev.player_won;
-            (true, player_won)
-        } else {
-            (false, false)
-        };
-
-        let hbox_coll = world.get_resource::<HBoxCollection>().unwrap();
-        let game_state = world.get_resource::<GameState>().unwrap().clone();
-        StepOutput {
-            hboxes: hbox_coll.hboxes.clone(),
-            round_over,
-            player_won,
-            game_state,
-        }
+        self.get_state()
     }
 
     /// Sends the bot's action this step.
@@ -157,6 +139,24 @@ impl MicroFighter {
         }
         self.app.world.send_event(ResetEvent);
         self.app.update();
+        self.get_state()
+    }
+
+    /// Loads the given state.
+    pub fn load_state(&mut self, state: GameState) -> StepOutput {
+        if self.first_step {
+            self.app.setup();
+            self.first_step = false;
+        }
+        self.app
+            .world
+            .send_event(LoadStateEvent { game_state: state });
+        self.app.update();
+        self.get_state()
+    }
+
+    /// Returns the current state.
+    pub fn get_state(&self) -> StepOutput {
         let world = &self.app.world;
 
         let events = world.get_resource::<Events<RoundOverEvent>>().unwrap();
@@ -176,18 +176,6 @@ impl MicroFighter {
             player_won,
             game_state,
         }
-    }
-
-    /// Loads the given state.
-    pub fn load_state(&mut self, state: GameState) {
-        if self.first_step {
-            self.app.setup();
-            self.first_step = false;
-        }
-        self.app
-            .world
-            .send_event(LoadStateEvent { game_state: state });
-        self.app.update();
     }
 
     /// Returns the internal screen size.
