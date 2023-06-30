@@ -47,7 +47,7 @@ class MFEnv(gym.Env):
         render_mode: Optional[str] = None,
         view_channels: Tuple[int, int, int] = (0, 1, 2),
         max_skip_frames: int = 0,
-        bot_frames: int = 4,
+        num_frames: int = 4,
     ):
         """
         Args:
@@ -59,15 +59,17 @@ class MFEnv(gym.Env):
         
         max_skip_frames: Maximum number of frames that will be skipped. When 0, no \
             frames are skipped. The actual number of frames skipped is random.
+        
+        num_frames: Number of frames in framestack.
         """
 
         self.game = MicroFighter(False)
         self.observation_space = gym.spaces.Box(0.0, 1.0, [5, IMG_SIZE, IMG_SIZE])
         self.action_space = gym.spaces.Discrete(9)
         self.render_mode = render_mode
-        self.channels = [np.zeros([IMG_SIZE, IMG_SIZE]) for _ in range(5)]
-        self.bot_frames = bot_frames
-        self.bot_frame_stack = [np.zeros([5, IMG_SIZE, IMG_SIZE]) for _ in range(bot_frames)]
+        self.num_frames = num_frames
+        self.player_frame_stack = [np.zeros([5, IMG_SIZE, IMG_SIZE]) for _ in range(self.num_frames)]
+        self.bot_frame_stack = [np.zeros([5, IMG_SIZE, IMG_SIZE]) for _ in range(self.num_frames)]
         self.max_skip_frames = max_skip_frames
         self.view_channels = view_channels
         if self.render_mode == "human":
@@ -84,25 +86,27 @@ class MFEnv(gym.Env):
             if step_output.round_over:
                 break
 
-        self.channels = self.gen_channels(step_output, is_player=True)
+        channels = self.gen_channels(step_output, is_player=True)
+        self.insert_obs(np.stack(channels), self.player_frame_stack)
         bot_channels = self.gen_channels(step_output, is_player=False)
-        self.insert_bot_obs(np.stack(bot_channels))
+        self.insert_obs(np.stack(bot_channels), self.bot_frame_stack)
 
         terminated = step_output.round_over
         reward = 0.0
         if terminated:
             reward = 1.0 if step_output.player_won else -1.0
 
-        return np.stack(self.channels), reward, terminated, False, {}
+        return np.stack(self.player_frame_stack), reward, terminated, False, {}
 
     def reset(
         self, *args, seed=None, options=None
     ) -> tuple[np.ndarray, dict[str, Any]]:
         step_output = self.game.reset()
-        self.channels = self.gen_channels(step_output, is_player=True)
+        channels = self.gen_channels(step_output, is_player=True)
+        self.insert_obs(np.stack(channels), self.player_frame_stack)
         bot_channels = self.gen_channels(step_output, is_player=False)
-        self.insert_bot_obs(np.stack(bot_channels))
-        return np.stack(self.channels), {}
+        self.insert_obs(np.stack(bot_channels), self.bot_frame_stack)
+        return np.stack(self.player_frame_stack), {}
 
     def gen_channels(
         self, step_output: StepOutput, is_player: bool = False
@@ -166,20 +170,21 @@ class MFEnv(gym.Env):
             box_channel,
         ]
 
-    def insert_bot_obs(self, obs: np.ndarray):
+    def insert_obs(self, obs: np.ndarray, frame_stack: list[np.ndarray]):
         """
-        Inserts a new frame and cycles the bot observation.
-        Sets frame "n" to the current value of frame "n - 1", from 1 to `self.bot_frames`.
+        Inserts a new frame and cycles the observation.
+        Sets frame "n" to the current value of frame "n - 1", from 1 to `self.num_frames`.
         """
-        for i in reversed(range(1, self.bot_frames)):
-            self.bot_frame_stack[i] = self.bot_frame_stack[i - 1]
-        self.bot_frame_stack[i] = obs
+        for i in reversed(range(1, self.num_frames)):
+            frame_stack[i] = frame_stack[i - 1]
+        frame_stack[0] = obs
 
     def render(self):
         if self.render_mode == "human":
-            r = self.channels[self.view_channels[0]]
-            g = self.channels[self.view_channels[1]]
-            b = self.channels[self.view_channels[2]]
+            channels = self.player_frame_stack[0]
+            r = channels[self.view_channels[0]]
+            g = channels[self.view_channels[1]]
+            b = channels[self.view_channels[2]]
             view = np.flip(np.stack([r, g, b]).transpose(2, 1, 0), 1).clip(0, 1) * 255.0
             view_surf = pygame.Surface([IMG_SIZE, IMG_SIZE])
             pygame.surfarray.blit_array(view_surf, view)
@@ -192,9 +197,10 @@ class MFEnv(gym.Env):
     def player_obs(self) -> np.ndarray:
         """
         Non-standard method for single agent envs.
-        Returns an observation for the player.
+        Returns an observation for the player. This observation is manually frame
+        stacked.
         """
-        return np.stack(self.channels)
+        return np.stack(self.player_frame_stack)
         
     def bot_obs(self) -> np.ndarray:
         """

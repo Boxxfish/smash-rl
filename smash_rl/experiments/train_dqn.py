@@ -12,7 +12,6 @@ import torch.nn as nn
 import wandb
 from gymnasium.vector import SyncVectorEnv
 from gymnasium.wrappers.time_limit import TimeLimit
-from gymnasium.wrappers.frame_stack import FrameStack
 import gymnasium as gym
 from tqdm import tqdm
 from argparse import ArgumentParser
@@ -97,19 +96,14 @@ env = SyncVectorEnv(
     [
         (
             lambda: TimeLimit(
-                FrameStack(
-                    MFEnv(max_skip_frames=max_skip_frames, bot_frames=num_frames),
-                    num_frames,
-                ),
+                    MFEnv(max_skip_frames=max_skip_frames, num_frames=num_frames),
                 time_limit,
             )
         )
         for _ in range(num_envs)
     ]
 )
-test_env = FrameStack(
-    MFEnv(max_skip_frames=max_skip_frames, bot_frames=num_frames), num_frames
-)
+test_env = MFEnv(max_skip_frames=max_skip_frames, num_frames=num_frames)
 
 # If evaluating, load the latest policy
 if args.eval:
@@ -120,14 +114,12 @@ if args.eval:
     assert isinstance(act_space, gym.spaces.Discrete)
     q_net = QNet(torch.Size(obs_space.shape), int(act_space.n))
     q_net.load_state_dict(torch.load("temp/q_net.pt"))
-    test_env = FrameStack(
-        MFEnv(
+    test_env = MFEnv(
             max_skip_frames=max_skip_frames,
             render_mode="human",
             view_channels=(0, 2, 4),
-        ),
-        num_frames,
-    )
+            num_frames=num_frames
+        )
     with torch.no_grad():
         reward_total = 0.0
         obs_, info = test_env.reset()
