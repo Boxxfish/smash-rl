@@ -1,3 +1,4 @@
+import math
 from typing import Optional
 import numpy as np
 from smash_rl_rust import GameState
@@ -5,6 +6,9 @@ import torch
 from smash_rl.micro_fighter.env import MFEnv
 from torch import nn
 
+# Constant for MCTS.
+# Higher values encourage exploration.
+C_PUCT = 4.0
 
 class MCTSNode:
     """
@@ -22,31 +26,50 @@ class MCTSNode:
         """
         Runs simulate step on this node, expanding children as needed.
         """
-        player_obs = torch.from_numpy(env.player_obs()).unsqueeze(0)
-        player_q_vals = q_net(player_obs).squeeze(0)
-        # TODO: Implement PUCT score for action selection
-        action = int(torch.argmax(player_q_vals, 0).item())
+        if not self.children:
+            # Expand child nodes when first expanding
+            player_obs = torch.from_numpy(env.player_obs()).unsqueeze(0)
+            player_q_vals = q_net(player_obs).squeeze(0)
+            self.children = []
+            for i in range(self.num_actions):
+                self.children.append(MCTSNode(player_q_vals[i].item(), self.num_actions, self.discount))
+        
+        # Choose action and simulate next step
+        total_visited_sqrt = math.sqrt(sum([x.visited for x in self.children]))
+        action = max(enumerate(self.children), key=lambda x: x[1].puct(total_visited_sqrt))[0]
         opp_obs = torch.from_numpy(env.bot_obs()).unsqueeze(0)
         opp_q_vals = q_net(opp_obs).squeeze(0)
         opp_action = int(torch.argmax(opp_q_vals, 0).item())
         env.bot_step(opp_action)
         _, reward, done, _, _ = env.step(action)
-
-        subsequent_return = 0.0
-        if not done:
-            if not self.children:
-                # Expand child nodes
-                self.children = []
-                for i in range(self.num_actions):
-                    self.children.append(MCTSNode(player_q_vals[i].item(), self.num_actions, self.discount))
-            else:
-                # Expand child node
-                self.children[action].simulate(q_net, env)
-            subsequent_return = self.children[action].total_return / self.children[action].visited
+        
+        if done:
+            subsequent_return = 0.0
+        elif self.children[action].visited == 1:
+            # Don't recurse
+            subsequent_return = self.children[action].avg_value()
+        else:
+            # Expand child node
+            self.children[action].simulate(q_net, env)
+            subsequent_return = self.children[action].avg_value()
             
-
         self.total_return += reward + self.discount * subsequent_return
         self.visited += 1
+
+    def avg_value(self) -> float:
+        """
+        Returns the average value experienced by this node.
+        """
+        return self.total_return / self.visited
+
+    def puct(self, total_visited_sqrt: float) -> float:
+        """
+        Returns the PUCT score.
+        Currently assumes uniform probablities.
+        """
+        q = self.avg_value()
+        u = C_PUCT * (1 / self.num_actions) * total_visited_sqrt / (1 + self.visited)
+        return q + u
 
 def run_mcts(
     q_net: nn.Module,
@@ -67,5 +90,5 @@ def run_mcts(
         env.load_state(initial_state)
         root.simulate(q_net, env)
     assert root.children
-    best_action = max(enumerate(root.children), key=lambda x: x[1].total_return / x[1].visited)[0]
+    best_action = max(enumerate(root.children), key=lambda x: x[1].avg_value())[0]
     return best_action
