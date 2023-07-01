@@ -8,39 +8,49 @@ from torch import nn
 
 class MCTSNode:
     """
-    Stores a Monte Carlo Tree Search node, containing either the guess for this
-    node's value, or the neighbor's value.
-    The children of a node correspond to actions the opponent performs.
+    Stores a Monte Carlo Tree Search node.
     """
 
-    def __init__(self, value: float, num_actions: int, is_player: bool):
-        self.value = value
+    def __init__(self, value: float, num_actions: int, discount: float):
+        self.total_return = value
+        self.visited = 1
+        self.discount = discount
         self.num_actions = num_actions
-        self.is_player = is_player
         self.children: Optional[list[MCTSNode]] = None
 
     def simulate(self, q_net: nn.Module, env: MFEnv):
         """
         Runs simulate step on this node, expanding children as needed.
         """
-        if not self.children:
-            # Expand child nodes
-            if self.is_player:
-                obs = torch.from_numpy(env.player_obs()).unsqueeze(0)
+        player_obs = torch.from_numpy(env.player_obs()).unsqueeze(0)
+        player_q_vals = q_net(player_obs).squeeze(0)
+        # TODO: Implement PUCT score for action selection
+        action = int(torch.argmax(player_q_vals, 0).item())
+        opp_obs = torch.from_numpy(env.bot_obs()).unsqueeze(0)
+        opp_q_vals = q_net(opp_obs).squeeze(0)
+        opp_action = int(torch.argmax(opp_q_vals, 0).item())
+        env.bot_step(opp_action)
+        _, reward, done, _, _ = env.step(action)
+
+        subsequent_return = 0.0
+        if not done:
+            if not self.children:
+                # Expand child nodes
+                self.children = []
+                for i in range(self.num_actions):
+                    self.children.append(MCTSNode(player_q_vals[i].item(), self.num_actions, self.discount))
             else:
-                obs = torch.from_numpy(env.bot_obs()).unsqueeze(0)
-            q_vals = q_net(obs).squeeze(0)
-            self.children = []
-            for i in range(self.num_actions):
-                self.children.append(MCTSNode(q_vals[i].item(), self.num_actions, not self.is_player))
+                # Expand child node
+                self.children[action].simulate(q_net, env)
+            subsequent_return = self.children[action].total_return / self.children[action].visited
             
-            # Update current value with children two laye, if they exist
-        
+
+        self.total_return += reward + self.discount * subsequent_return
+        self.visited += 1
 
 def run_mcts(
     q_net: nn.Module,
     env: MFEnv,
-    initial_obs: np.ndarray,
     initial_state: GameState,
     rollouts: int,
     discount: float,
@@ -48,18 +58,14 @@ def run_mcts(
 ) -> int:
     """
     Runs MCTS on the provided env. This method assumes MFEnv is used.
-    Returns the method with the highest reward.
+    Returns the action with the highest reward.
     """
-    obs_ = initial_obs
-    obs = torch.from_numpy(obs_).unsqueeze(0)
-    q_vals = q_net(obs).squeeze(0)
-    root = MCTSNode(0.0, num_actions)
-    root.children = []
-    for i in range(num_actions):
-        root.children.append(MCTSNode(q_vals[i].item(), num_actions))
+    # Root node is special case, we'll have the first expansion set its actual value
+    root = MCTSNode(0.0, num_actions, discount)
+    root.visited = 0
     for _ in range(rollouts):
-        curr_node = root
-        while curr_node.children:
-            # TODO: Incorporate UCT
-            curr_node = max(enumerate(curr_node.children), key=lambda x: x[1].value)[1]
-    return 0
+        env.load_state(initial_state)
+        root.simulate(q_net, env)
+    assert root.children
+    best_action = max(enumerate(root.children), key=lambda x: x[1].total_return / x[1].visited)[0]
+    return best_action
