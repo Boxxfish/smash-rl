@@ -22,13 +22,15 @@ class MFEnv(gym.Env):
     An environment that wraps the MicroFighter game.
 
     ### Observation Space
-    4 channels of size IMG_SIZE x IMG_SIZE. The channels are:
+    4x5 channels of size IMG_SIZE x IMG_SIZE. The channels are:
 
     0. 1 if hitbox, 0 if hurtbox.
     1. Damage sustained by hurtboxes or inflicted by hitboxes.
     2. 1 if this is the player, 0 if this is the opponent.
     3. State of the character that belongs to the hbox.
     4. 1 if hbox, 0 if empty space.
+
+    We manually perform frame stacking.
 
     ### Action Space
     0. Do nothing.
@@ -64,7 +66,7 @@ class MFEnv(gym.Env):
         """
 
         self.game = MicroFighter(False)
-        self.observation_space = gym.spaces.Box(0.0, 1.0, [5, IMG_SIZE, IMG_SIZE])
+        self.observation_space = gym.spaces.Box(0.0, 1.0, [4, 5, IMG_SIZE, IMG_SIZE])
         self.action_space = gym.spaces.Discrete(9)
         self.render_mode = render_mode
         self.num_frames = num_frames

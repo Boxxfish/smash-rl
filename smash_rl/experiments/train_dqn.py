@@ -216,7 +216,7 @@ for step in tqdm(range(iterations), position=0):
                 None,
             )
             obs = next_obs
-
+            
     # Train
     if buffer.filled:
         total_q_loss = train_dqn(

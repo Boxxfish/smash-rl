@@ -372,8 +372,8 @@ fn load_game_state(
             // Remove player and bot children if they exist
             let player_e = player_query.single();
             let bot_e = bot_query.single();
-            commands.entity(player_e).clear_children();
-            commands.entity(bot_e).clear_children();
+            commands.entity(player_e).despawn_descendants();
+            commands.entity(bot_e).despawn_descendants();
             (player_e, bot_e)
         } else {
             // Othewise, create new player and bot
