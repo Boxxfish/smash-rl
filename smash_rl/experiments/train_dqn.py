@@ -3,7 +3,6 @@ Trains an agent with a DQN.
 """
 import copy
 import random
-from functools import reduce
 from typing import Any
 
 import numpy as np  # type: ignore
@@ -31,18 +30,18 @@ train_steps = 128  # Number of steps to step through during sampling. Total # of
 iterations = 100000  # Number of sample/train iterations.
 train_iters = 1  # Number of passes over the samples collected.
 train_batch_size = 64  # Minibatch size while training models.
-discount = 0.999  # Discount factor applied to rewards.
+discount = 0.99  # Discount factor applied to rewards.
 q_epsilon = 0.9  # Epsilon for epsilon greedy strategy. This gets annealed over time.
-eval_steps = 2  # Number of eval runs to average over.
+eval_steps = 1  # Number of eval runs to average over.
 max_eval_steps = 100  # Max number of steps to take during each eval run.
 q_lr = 0.0001  # Learning rate of the q net.
 warmup_steps = 500  # For the first n number of steps, we will only sample randomly.
 buffer_size = 2000  # Number of elements that can be stored in the buffer.
-target_update = 500  # Number of iterations before updating Q target.
+target_update = 200  # Number of iterations before updating Q target.
 num_frames = 4  # Number of frames in frame stack.
 max_skip_frames = 4  # Max number of frames to skip.
 time_limit = 500  # Time limit before truncation.
-bot_update = 1000  # Number of iterations before updating
+bot_update = 500  # Number of iterations before updating the bot.
 device = torch.device("cuda")
 
 
@@ -145,17 +144,19 @@ wandb.init(
     project="smash-rl",
     entity=smash_rl.conf.entity,
     config={
-        "experiment": "dqn",
+        "experiment": "micro fighter dqn",
         "num_envs": num_envs,
         "train_steps": train_steps,
         "train_iters": train_iters,
         "train_batch_size": train_batch_size,
         "discount": discount,
-        "q_epsilon": q_epsilon,
+        "initial_epsilon": q_epsilon,
         "max_eval_steps": max_eval_steps,
         "q_lr": q_lr,
         "num_frames": num_frames,
         "max_skip_frames": max_skip_frames,
+        "bot_update": bot_update,
+        "target_update": target_update,
     },
 )
 
@@ -183,6 +184,7 @@ obs = torch.Tensor(env.reset()[0])
 done = False
 for step in tqdm(range(iterations), position=0):
     percent_done = step / iterations
+    q_epsilon_real = q_epsilon * max(1.0 - percent_done, 0.05)
 
     # Collect experience
     with torch.no_grad():
@@ -194,7 +196,7 @@ for step in tqdm(range(iterations), position=0):
             test_env.bot_step(bot_action)
 
             if (
-                random.random() < q_epsilon * max(1.0 - percent_done, 0.05)
+                random.random() < q_epsilon_real
                 or step < warmup_steps
             ):
                 actions_list = [
@@ -267,6 +269,7 @@ for step in tqdm(range(iterations), position=0):
                 "avg_eval_episode_predicted_reward": pred_reward_total / eval_steps,
                 "avg_q_loss": total_q_loss / train_iters,
                 "q_lr": q_opt.param_groups[-1]["lr"],
+                "epsilon": q_epsilon_real,
             }
         )
 
