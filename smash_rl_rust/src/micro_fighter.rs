@@ -66,9 +66,6 @@ pub struct StepOutput {
     /// Whether the player won.
     #[pyo3(get)]
     pub player_won: bool,
-    /// The state of the game.
-    #[pyo3(get)]
-    pub game_state: GameState,
 }
 
 /// Simple fighting game.
@@ -118,6 +115,7 @@ impl MicroFighter {
     pub fn step(&mut self, action_id: u32) -> StepOutput {
         if self.first_step {
             self.app.setup();
+            self.app.update();
             self.first_step = false;
         }
         self.app.world.send_event(MLPlayerActionEvent { action_id });
@@ -135,6 +133,7 @@ impl MicroFighter {
     pub fn reset(&mut self) -> StepOutput {
         if self.first_step {
             self.app.setup();
+            self.app.update();
             self.first_step = false;
         }
         self.app.world.send_event(ResetEvent);
@@ -146,6 +145,7 @@ impl MicroFighter {
     pub fn load_state(&mut self, state: GameState) -> StepOutput {
         if self.first_step {
             self.app.setup();
+            self.app.update();
             self.first_step = false;
         }
         self.app
@@ -169,13 +169,16 @@ impl MicroFighter {
         };
 
         let hbox_coll = world.get_resource::<HBoxCollection>().unwrap();
-        let game_state = world.get_resource::<GameState>().unwrap().clone();
         StepOutput {
             hboxes: hbox_coll.hboxes.clone(),
             round_over,
             player_won,
-            game_state,
         }
+    }
+
+    /// Returns the current reloadable state of the game.
+    pub fn get_game_state(&self) -> GameState {
+        self.app.world.get_resource::<GameState>().unwrap().clone()
     }
 
     /// Returns the internal screen size.
@@ -337,12 +340,11 @@ mod tests {
             micro_fighter.reset();
 
             // Run the environment a couple steps
-            let mut output = None;
             for (mv, bot_mv) in before_moves.iter().zip(&before_moves_bot) {
                 micro_fighter.bot_step(*bot_mv);
-                output = Some(micro_fighter.step(*mv));
+                micro_fighter.step(*mv);
             }
-            let state = output.unwrap().game_state;
+            let state = micro_fighter.get_game_state();
 
             // Collect data after moving a couple more steps
             let mut outputs = Vec::new();

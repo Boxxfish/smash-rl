@@ -3,15 +3,12 @@ use bevy_rapier2d::prelude::*;
 use pyo3::prelude::*;
 
 use crate::{
-    character::{Bot, CharAttrs, CharBundle, CharInput, Character, Player, CHAR_WIDTH},
-    hit::{Hit, Projectile, Hitstun},
+    character::{Bot, CharAttrs, CharBundle, CharInput, Character, Player},
+    hit::{Hit, Hitstun, Projectile},
     micro_fighter::{
         AppState, OPPONENT_COLL_FILTER, OPPONENT_COLL_GROUP, PLAYER_COLL_FILTER, PLAYER_COLL_GROUP,
     },
-    move_states::{
-        GrabState, HeavyAttackRecoveryState, HeavyAttackStartupState, HitstunState,
-        LightAttackRecoveryState, LightAttackStartupState, ShieldState, StateTimer, MoveState, CurrentMoveState, add_move_state,
-    },
+    move_states::{add_move_state, CurrentMoveState, MoveState, StateTimer},
 };
 
 /// Plugin for systems required for ML.
@@ -114,14 +111,7 @@ fn collect_hboxes(
     let player_e = player_query.single();
     let mut player_state = None;
     let mut opp_state = None;
-    for (
-        glob_transform,
-        character,
-        collider,
-        player,
-        curr_move_state,
-    ) in char_query.iter()
-    {
+    for (glob_transform, character, collider, player, curr_move_state) in char_query.iter() {
         let transform = glob_transform.compute_transform();
         let collider = collider.as_cuboid().unwrap();
         let x = (transform.translation.x - collider.half_extents().x) as i32;
@@ -326,15 +316,8 @@ fn update_game_state(
 
 /// Helper function for getting character state from a query.
 fn extract_char_state(char_e: Entity, char_query: &Query<CharQueryItems>) -> CharGameState {
-    let (
-        glob_transform,
-        character,
-        attrs,
-        velocity,
-        state_timer,
-        curr_move_state,
-        hitstun,
-    ) = char_query.get(char_e).unwrap();
+    let (glob_transform, character, attrs, velocity, state_timer, curr_move_state, hitstun) =
+        char_query.get(char_e).unwrap();
 
     let pos = glob_transform.translation().xy();
     let vel = velocity.linvel;
@@ -419,8 +402,7 @@ fn load_game_state(
             .add_child(p_floor_collider);
         add_move_state(player_state.state, player_e, &mut commands);
         if let Some(hitstun) = &player_state.hitstun {
-            commands.entity(player_e)
-            .insert(hitstun.clone());
+            commands.entity(player_e).insert(hitstun.clone());
         }
 
         // Add bot
@@ -459,8 +441,7 @@ fn load_game_state(
             .add_child(b_floor_collider);
         add_move_state(bot_state.state, bot_e, &mut commands);
         if let Some(hitstun) = &bot_state.hitstun {
-            commands.entity(bot_e)
-            .insert(hitstun.clone());
+            commands.entity(bot_e).insert(hitstun.clone());
         }
 
         // Add hits

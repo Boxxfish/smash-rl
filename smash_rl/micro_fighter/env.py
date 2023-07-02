@@ -17,6 +17,22 @@ IMG_SIZE = 32
 IMG_SCALE = 4
 
 
+class EnvState:
+    """
+    This contains internal game state and frame stacked observations.
+    """
+
+    def __init__(
+        self,
+        player_frame_stack: List[np.ndarray],
+        bot_frame_stack: List[np.ndarray],
+        game_state: GameState,
+    ):
+        self.player_frame_stack = player_frame_stack
+        self.bot_frame_stack = bot_frame_stack
+        self.game_state = game_state
+
+
 class MFEnv(gym.Env):
     """
     An environment that wraps the MicroFighter game.
@@ -70,8 +86,12 @@ class MFEnv(gym.Env):
         self.action_space = gym.spaces.Discrete(9)
         self.render_mode = render_mode
         self.num_frames = num_frames
-        self.player_frame_stack = [np.zeros([5, IMG_SIZE, IMG_SIZE]) for _ in range(self.num_frames)]
-        self.bot_frame_stack = [np.zeros([5, IMG_SIZE, IMG_SIZE]) for _ in range(self.num_frames)]
+        self.player_frame_stack = [
+            np.zeros([5, IMG_SIZE, IMG_SIZE]) for _ in range(self.num_frames)
+        ]
+        self.bot_frame_stack = [
+            np.zeros([5, IMG_SIZE, IMG_SIZE]) for _ in range(self.num_frames)
+        ]
         self.max_skip_frames = max_skip_frames
         self.view_channels = view_channels
         if self.render_mode == "human":
@@ -203,7 +223,7 @@ class MFEnv(gym.Env):
         stacked.
         """
         return np.stack(self.player_frame_stack)
-        
+
     def bot_obs(self) -> np.ndarray:
         """
         Non-standard method for single agent envs.
@@ -219,8 +239,16 @@ class MFEnv(gym.Env):
         """
         self.game.bot_step(action)
 
-    def load_state(self, state: GameState):
+    def state(self) -> EnvState:
+        """
+        Returns the current state of the environment.
+        """
+        return EnvState(self.player_frame_stack, self.bot_frame_stack, self.game.get_game_state())
+
+    def load_state(self, state: EnvState):
         """
         Loads a previously saved state.
         """
-        self.game.load_state(state)
+        self.player_frame_stack = state.player_frame_stack
+        self.bot_frame_stack = state.bot_frame_stack
+        self.game.load_state(state.game_state)
