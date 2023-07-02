@@ -250,12 +250,12 @@ fn handle_reset(
     ev_reset: EventReader<ResetEvent>,
     player_query: Query<Entity, With<Player>>,
     bot_query: Query<Entity, With<Bot>>,
-    hit_query: Query<Entity, With<Hit>>,
+    proj_query: Query<Entity, (With<Hit>, With<Projectile>)>,
 ) {
     // This should only run once per frame
     if !ev_reset.is_empty() {
-        for hit_e in hit_query.iter() {
-            commands.get_entity(hit_e).unwrap().despawn();
+        for proj_e in proj_query.iter() {
+            commands.get_entity(proj_e).unwrap().despawn();
         }
 
         if !player_query.is_empty() {

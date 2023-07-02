@@ -88,7 +88,6 @@ def run_mcts(
     root = MCTSNode(0.0, num_actions, discount)
     root.visited = 0
     for _ in range(rollouts):
-        print("Starting rollout")
         env.load_state(initial_state)
         root.simulate(q_net, env)
     assert root.children

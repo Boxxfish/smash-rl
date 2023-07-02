@@ -163,7 +163,7 @@ pub struct CharAttrs {
 impl Default for CharAttrs {
     fn default() -> Self {
         Self {
-            jump_height: 40,
+            jump_height: 150,
             run_speed: 200,
             size: 30,
             light_size: 12,
@@ -197,7 +197,7 @@ pub struct RoundOverEvent {
 
 /// When a character touches one of the screen edges, emit a round over.
 fn round_over_on_edge(
-    char_query: Query<(&Transform, Option<&Player>)>,
+    char_query: Query<(&Transform, Option<&Player>), Or<(With<Player>, With<Bot>)>>,
     mut ev_round_over: EventWriter<RoundOverEvent>,
 ) {
     for (transform, player) in char_query.iter() {

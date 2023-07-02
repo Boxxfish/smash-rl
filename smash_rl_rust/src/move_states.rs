@@ -67,7 +67,7 @@ impl Plugin for MoveStatesPlugin {
         .add_plugin(MoveStatePlugin::<IdleState, { MoveState::Idle as u32 }>::default())
         .add_plugin(MoveStatePlugin::<RunState, { MoveState::Run as u32 }>::default())
         .add_plugin(MoveStatePlugin::<JumpState, { MoveState::Jump as u32 }>::default())
-        .add_plugin(MoveStatePlugin::<FallState, { MoveState::Hitstun as u32 }>::default())
+        .add_plugin(MoveStatePlugin::<FallState, { MoveState::Fall as u32 }>::default())
         .add_plugin(MoveStatePlugin::<
             LightAttackStartupState,
             { MoveState::LightAttackStartup as u32 },
@@ -369,6 +369,7 @@ fn handle_jump(
     for (e, char_inpt, char_attrs, mut vel, timer) in char_query.iter_mut() {
         vel.linvel.y = JUMP_VEL;
         if timer.frames >= ((char_attrs.jump_height as f32 / JUMP_VEL) / FIXED_TIMESTEP) as u32 {
+            vel.linvel.y = 0.0;
             commands
                 .entity(e)
                 .insert((FallState, GravityScale(10.0)))
@@ -470,7 +471,7 @@ fn handle_light_attack_hit_end(
     for e in rem_query.iter() {
         for (hit_e, hit_parent) in hit_query.iter() {
             if hit_parent.get() == e {
-                commands.entity(hit_e).despawn();
+                commands.entity(hit_e).remove_parent().despawn();
             }
         }
     }
@@ -547,7 +548,7 @@ fn handle_heavy_attack_hit_end(
     for e in rem_query.iter() {
         for (hit_e, hit_parent) in hit_query.iter() {
             if hit_parent.get() == e {
-                commands.entity(hit_e).despawn();
+                commands.entity(hit_e).remove_parent().despawn();
             }
         }
     }
@@ -692,7 +693,7 @@ fn handle_grab_end(
     for e in rem_query.iter() {
         for (hit_e, hit_parent) in hit_query.iter() {
             if hit_parent.get() == e {
-                commands.entity(hit_e).despawn();
+                commands.entity(hit_e).remove_parent().despawn();
             }
         }
     }
