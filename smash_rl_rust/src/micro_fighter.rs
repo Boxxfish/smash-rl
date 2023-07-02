@@ -42,7 +42,7 @@ impl Plugin for HumanPlugin {
             ..default()
         }))
         .add_plugin(RapierDebugRenderPlugin::default())
-        .add_system(player_input.in_set(OnUpdate(AppState::Running)));
+        .add_systems((player_input, reset_on_gameover).in_set(OnUpdate(AppState::Running)));
     }
 }
 
@@ -250,23 +250,22 @@ fn handle_reset(
     ev_reset: EventReader<ResetEvent>,
     player_query: Query<Entity, With<Player>>,
     bot_query: Query<Entity, With<Bot>>,
+    hit_query: Query<Entity, With<Hit>>,
 ) {
     // This should only run once per frame
     if !ev_reset.is_empty() {
-        let (player_e, bot_e) = if !player_query.is_empty() {
-            // Remove player and bot children if they exist
+        for hit_e in hit_query.iter() {
+            commands.get_entity(hit_e).unwrap().despawn();
+        }
+
+        if !player_query.is_empty() {
             let player_e = player_query.single();
             let bot_e = bot_query.single();
-            commands.entity(player_e).despawn_descendants();
-            commands.entity(bot_e).despawn_descendants();
-            (player_e, bot_e)
-        } else {
-            // Othewise, create new player and bot
-            (
-                commands.spawn(Player::default()).id(),
-                commands.spawn(Bot).id(),
-            )
-        };
+            commands.entity(player_e).despawn_recursive();
+            commands.entity(bot_e).despawn_recursive();
+        }
+        let player_e = commands.spawn(Player::default()).id();
+        let bot_e = commands.spawn(Bot).id();
 
         // Add player
         let mut rng = rand::thread_rng();
@@ -317,6 +316,15 @@ fn handle_reset(
 
         // We can now run out other systems
         app_state.set(AppState::Running);
+    }
+}
+
+
+/// Resets the game on game over.
+/// Only used on the human version.
+fn reset_on_gameover(mut ev_reset: EventWriter<ResetEvent>, mut ev_round_over: EventReader<RoundOverEvent>) {
+    for _ in ev_round_over.iter() {
+        ev_reset.send(ResetEvent);
     }
 }
 

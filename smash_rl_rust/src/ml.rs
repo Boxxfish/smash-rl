@@ -348,23 +348,22 @@ fn load_game_state(
     mut ev_load_state: EventReader<LoadStateEvent>,
     player_query: Query<Entity, With<Player>>,
     bot_query: Query<Entity, With<Bot>>,
+    hit_query: Query<Entity, With<Hit>>,
     mut commands: Commands,
 ) {
     for ev in ev_load_state.iter() {
-        let (player_e, bot_e) = if !player_query.is_empty() {
-            // Remove player and bot children if they exist
+        for hit_e in hit_query.iter() {
+            commands.get_entity(hit_e).unwrap().despawn();
+        }
+
+        if !player_query.is_empty() {
             let player_e = player_query.single();
             let bot_e = bot_query.single();
-            commands.entity(player_e).despawn_descendants();
-            commands.entity(bot_e).despawn_descendants();
-            (player_e, bot_e)
-        } else {
-            // Othewise, create new player and bot
-            (
-                commands.spawn(Player::default()).id(),
-                commands.spawn(Bot).id(),
-            )
-        };
+            commands.entity(player_e).despawn_recursive();
+            commands.entity(bot_e).despawn_recursive();
+        }
+        let player_e = commands.spawn(Player::default()).id();
+        let bot_e = commands.spawn(Bot).id();
 
         // Add player
         let player_state = ev.game_state.player_state.as_ref().unwrap();
