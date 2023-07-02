@@ -17,7 +17,7 @@ class MCTSNode:
 
     def __init__(self, value: float, num_actions: int, discount: float):
         self.total_return = value
-        self.visited = 1
+        self.visited = 0
         self.discount = discount
         self.num_actions = num_actions
         self.children: Optional[list[MCTSNode]] = None
@@ -46,9 +46,10 @@ class MCTSNode:
         
         if done:
             subsequent_return = 0.0
-        elif self.children[action].visited == 1:
+        elif self.children[action].visited == 0:
             # Don't recurse
             subsequent_return = self.children[action].avg_value()
+            self.children[action].visited += 1
         else:
             # Expand child node
             self.children[action].simulate(q_net, env)
@@ -61,6 +62,8 @@ class MCTSNode:
         """
         Returns the average value experienced by this node.
         """
+        if self.visited == 0:
+            return self.total_return
         return self.total_return / self.visited
 
     def puct(self, total_visited_sqrt: float) -> float:
@@ -90,6 +93,7 @@ def run_mcts(
     for _ in range(rollouts):
         env.load_state(initial_state)
         root.simulate(q_net, env)
+    print("Finished rollouts")
     assert root.children
     best_action = max(enumerate(root.children), key=lambda x: x[1].avg_value())[0]
     return best_action

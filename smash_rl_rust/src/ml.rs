@@ -348,12 +348,12 @@ fn load_game_state(
     mut ev_load_state: EventReader<LoadStateEvent>,
     player_query: Query<Entity, With<Player>>,
     bot_query: Query<Entity, With<Bot>>,
-    hit_query: Query<Entity, With<Hit>>,
+    proj_query: Query<Entity, (With<Hit>, With<Projectile>)>,
     mut commands: Commands,
 ) {
     for ev in ev_load_state.iter() {
-        for hit_e in hit_query.iter() {
-            commands.get_entity(hit_e).unwrap().despawn();
+        for proj_e in proj_query.iter() {
+            commands.get_entity(proj_e).unwrap().despawn();
         }
 
         if !player_query.is_empty() {
