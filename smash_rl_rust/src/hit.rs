@@ -1,9 +1,11 @@
 use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
+use bevy_save::AppSaveableExt;
 
 use crate::{
     character::{Character, HorizontalDir},
-    micro_fighter::AppState, move_states::HitstunState,
+    micro_fighter::AppState,
+    move_states::HitstunState,
 };
 
 /// Conversion of knockback units to velocity.
@@ -19,12 +21,18 @@ impl Plugin for HitPlugin {
         app.add_systems(
             (compute_hit_interactions, move_projectile_and_remove)
                 .in_set(OnUpdate(AppState::Running)),
-        );
+        )
+        // Serialization
+        .register_type::<HitType>()
+        .register_saveable::<Hit>()
+        .register_saveable::<Projectile>()
+        .register_saveable::<Sensor>()
+        .register_saveable::<ActiveEvents>();
     }
 }
 
 /// The effect of the hit.
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq, Reflect)]
 pub enum HitType {
     /// Knocks back an opponent. Can be shielded.
     Normal,
@@ -33,7 +41,8 @@ pub enum HitType {
 }
 
 /// Denotes that the entity is a hitbox.
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Reflect)]
+#[reflect(Component)]
 pub struct Hit {
     pub damage: u32,
     pub direction: Vec2,
@@ -42,13 +51,38 @@ pub struct Hit {
     pub hit_type: HitType,
 }
 
+// This implementation is purely for reflection.
+// It shouldn't be used.
+impl Default for Hit {
+    fn default() -> Self {
+        Self {
+            damage: Default::default(),
+            direction: Default::default(),
+            chars_hit: Default::default(),
+            owner: Entity::from_bits(0),
+            hit_type: HitType::Normal,
+        }
+    }
+}
+
 /// Denotes a projectile.
 /// Doesn't do any damage by itself.
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Reflect)]
+#[reflect(Component)]
 pub struct Projectile {
     pub frames_left: u32,
     pub speed: u32,
     pub dir: HorizontalDir,
+}
+
+impl Default for Projectile {
+    fn default() -> Self {
+        Self {
+            frames_left: Default::default(),
+            speed: Default::default(),
+            dir: HorizontalDir::Left,
+        }
+    }
 }
 
 /// Bundle for hits.

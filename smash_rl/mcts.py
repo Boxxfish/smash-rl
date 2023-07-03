@@ -41,6 +41,7 @@ class MCTSNode:
         opp_q_vals = q_net(opp_obs).squeeze(0)
         opp_action = int(torch.argmax(opp_q_vals, 0).item())
         env.bot_step(opp_action)
+        print(action)
         _, reward, done, _, _ = env.step(action)
         env.render()
         

@@ -115,12 +115,12 @@ if args.eval:
     assert isinstance(act_space, gym.spaces.Discrete)
     q_net = QNet(torch.Size(obs_space.shape), int(act_space.n))
     q_net.load_state_dict(torch.load("temp/q_net.pt"))
-    # test_env = MFEnv(
-    #     max_skip_frames=max_skip_frames,
-    #     render_mode="human",
-    #     view_channels=(0, 2, 4),
-    #     num_frames=num_frames,
-    # )
+    test_env = MFEnv(
+        max_skip_frames=max_skip_frames,
+        # render_mode="human",
+        # view_channels=(0, 2, 4),
+        num_frames=num_frames,
+    )
     mcts_env = MFEnv(
         max_skip_frames=max_skip_frames,
         num_frames=num_frames,

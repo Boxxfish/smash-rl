@@ -295,7 +295,11 @@ fn load_game_state(world: &mut World) {
     let mut reader = events.get_reader();
     let mut snapshots = Vec::new();
     for ev in reader.iter(events) {
-        snapshots.push(ev.game_state.ser_snapshot.as_ref().cloned().unwrap());
+        if ev.game_state.ser_snapshot.is_some() {
+            snapshots.push(ev.game_state.ser_snapshot.as_ref().cloned().unwrap());
+        } else {
+            eprint!("Attempted to load nonexistant state. Ignoring.");
+        }
     }
     for snapshot in &snapshots {
         world
