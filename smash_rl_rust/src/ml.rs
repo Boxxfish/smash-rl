@@ -1,14 +1,13 @@
-use bevy::{math::Vec3Swizzles, prelude::*};
+use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
+use bevy_save::{AppSaveableExt, SavePlugins, WorldSaveableExt};
 use pyo3::prelude::*;
 
 use crate::{
-    character::{Bot, CharAttrs, CharBundle, CharInput, Character, Player},
+    character::{Bot, CharAttrs, CharInput, Character, Player},
     hit::{Hit, Hitstun, Projectile},
-    micro_fighter::{
-        AppState, OPPONENT_COLL_FILTER, OPPONENT_COLL_GROUP, PLAYER_COLL_FILTER, PLAYER_COLL_GROUP,
-    },
-    move_states::{add_move_state, CurrentMoveState, MoveState, StateTimer},
+    micro_fighter::AppState,
+    move_states::{CurrentMoveState, MoveState},
 };
 
 /// Plugin for systems required for ML.
@@ -19,6 +18,7 @@ impl Plugin for MLPlugin {
         app.add_plugins(MinimalPlugins)
             .add_plugin(TransformPlugin)
             .add_plugin(HierarchyPlugin)
+            .add_plugins(SavePlugins)
             .insert_resource(HBoxCollection::default())
             .insert_resource(GameState::default())
             .configure_set(
@@ -36,6 +36,7 @@ impl Plugin for MLPlugin {
                 )
                     .in_base_set(MLBaseSet::MLWork),
             )
+            .register_type::<Option<Entity>>()
             .add_event::<MLPlayerActionEvent>()
             .add_event::<MLBotActionEvent>()
             .add_event::<LoadStateEvent>();
@@ -248,9 +249,7 @@ fn handle_ml_bot_input(
 #[pyclass]
 #[derive(Resource, Default, Clone)]
 pub struct GameState {
-    pub player_state: Option<CharGameState>,
-    pub opponent_state: Option<CharGameState>,
-    pub hits: Vec<HitState>,
+    pub ser_snapshot: Option<Vec<u8>>,
 }
 
 /// Stores the current state of a character.
@@ -274,68 +273,15 @@ pub struct HitState {
     pub extents: Vec2,
 }
 
-/// Items in the character query when saving state.
-type CharQueryItems<'a> = (
-    &'a GlobalTransform,
-    &'a Character,
-    &'a CharAttrs,
-    &'a Velocity,
-    &'a StateTimer,
-    &'a CurrentMoveState,
-    Option<&'a Hitstun>,
-);
-
 /// Updates the current game state resource.
-fn update_game_state(
-    mut game_state: ResMut<GameState>,
-    char_query: Query<CharQueryItems>,
-    player_query: Query<Entity, With<Player>>,
-    bot_query: Query<Entity, With<Bot>>,
-    hit_query: Query<(&Hit, &Transform, &Collider, Option<&Projectile>)>,
-) {
-    // Store character data
-    let player_state = extract_char_state(player_query.single(), &char_query);
-    let opponent_state = extract_char_state(bot_query.single(), &char_query);
-
-    // Store all hits
-    let mut hits = Vec::new();
-    for (hit, transform, collider, projectile) in hit_query.iter() {
-        let hit_state = HitState {
-            hit: hit.clone(),
-            projectile: projectile.cloned(),
-            pos: transform.translation.xy(),
-            extents: collider.as_cuboid().unwrap().half_extents(),
-        };
-        hits.push(hit_state);
-    }
-
-    game_state.player_state = Some(player_state);
-    game_state.opponent_state = Some(opponent_state);
-    game_state.hits = hits;
-}
-
-/// Helper function for getting character state from a query.
-fn extract_char_state(char_e: Entity, char_query: &Query<CharQueryItems>) -> CharGameState {
-    let (glob_transform, character, attrs, velocity, state_timer, curr_move_state, hitstun) =
-        char_query.get(char_e).unwrap();
-
-    let pos = glob_transform.translation().xy();
-    let vel = velocity.linvel;
-    let damage = character.damage;
-    let attrs = *attrs;
-    let frame_counter = state_timer.frames;
-    let state = curr_move_state.move_state;
-    let hitstun = hitstun.cloned();
-
-    CharGameState {
-        pos,
-        vel,
-        damage,
-        state,
-        attrs,
-        frame_counter,
-        hitstun,
-    }
+fn update_game_state(world: &mut World) {
+    let mut buf = Vec::new();
+    world
+        .serialize(&mut rmp_serde::Serializer::new(&mut buf))
+        .unwrap();
+    let mut res = world.get_resource_mut::<GameState>();
+    let game_state = res.as_mut().unwrap();
+    game_state.ser_snapshot = Some(buf);
 }
 
 /// Causes the game to load the state given.
@@ -344,120 +290,16 @@ pub struct LoadStateEvent {
 }
 
 /// Loads the game state.
-fn load_game_state(
-    mut ev_load_state: EventReader<LoadStateEvent>,
-    player_query: Query<Entity, With<Player>>,
-    bot_query: Query<Entity, With<Bot>>,
-    proj_query: Query<Entity, (With<Hit>, With<Projectile>)>,
-    mut commands: Commands,
-) {
-    for ev in ev_load_state.iter() {
-        for proj_e in proj_query.iter() {
-            commands.get_entity(proj_e).unwrap().despawn();
-        }
-
-        if !player_query.is_empty() {
-            let player_e = player_query.single();
-            let bot_e = bot_query.single();
-            commands.entity(player_e).despawn_recursive();
-            commands.entity(bot_e).despawn_recursive();
-        }
-        let player_e = commands.spawn(Player::default()).id();
-        let bot_e = commands.spawn(Bot).id();
-
-        // Add player
-        let player_state = ev.game_state.player_state.as_ref().unwrap();
-        let p_floor_collider = commands
-            .spawn((
-                Collider::cuboid(8.0, 4.0),
-                TransformBundle::from(Transform::from_xyz(0.0, -30.0, 0.0)),
-                ActiveEvents::COLLISION_EVENTS,
-                CollisionGroups::new(
-                    Group::from_bits(PLAYER_COLL_GROUP).unwrap(),
-                    Group::from_bits(PLAYER_COLL_FILTER).unwrap(),
-                ),
-            ))
-            .id();
-        let mut p_bundle = CharBundle {
-            transform: TransformBundle::from(Transform::from_xyz(
-                player_state.pos.x,
-                player_state.pos.y,
-                0.0,
-            )),
-            vel: Velocity::linear(player_state.vel),
-            state_timer: StateTimer {
-                frames: player_state.frame_counter,
-            },
-            ..default()
-        };
-        p_bundle.character.damage = player_state.damage;
-        p_bundle.character.floor_collider = Some(p_floor_collider);
-        if player_state.state == MoveState::Jump {
-            p_bundle.grav_scale.0 = 0.0;
-        }
-        commands
-            .entity(player_e)
-            .insert(p_bundle)
-            .add_child(p_floor_collider);
-        add_move_state(player_state.state, player_e, &mut commands);
-        if let Some(hitstun) = &player_state.hitstun {
-            commands.entity(player_e).insert(hitstun.clone());
-        }
-
-        // Add bot
-        let bot_state = ev.game_state.opponent_state.as_ref().unwrap();
-        let b_floor_collider = commands
-            .spawn((
-                Collider::cuboid(8.0, 4.0),
-                TransformBundle::from(Transform::from_xyz(0.0, -30.0, 0.0)),
-                ActiveEvents::COLLISION_EVENTS,
-                CollisionGroups::new(
-                    Group::from_bits(OPPONENT_COLL_GROUP).unwrap(),
-                    Group::from_bits(OPPONENT_COLL_FILTER).unwrap(),
-                ),
-            ))
-            .id();
-        let mut b_bundle = CharBundle {
-            transform: TransformBundle::from(Transform::from_xyz(
-                bot_state.pos.x,
-                bot_state.pos.y,
-                0.0,
-            )),
-            vel: Velocity::linear(bot_state.vel),
-            state_timer: StateTimer {
-                frames: bot_state.frame_counter,
-            },
-            ..default()
-        };
-        b_bundle.character.floor_collider = Some(b_floor_collider);
-        b_bundle.character.damage = bot_state.damage;
-        if bot_state.state == MoveState::Jump {
-            b_bundle.grav_scale.0 = 0.0;
-        }
-        commands
-            .entity(bot_e)
-            .insert(b_bundle)
-            .add_child(b_floor_collider);
-        add_move_state(bot_state.state, bot_e, &mut commands);
-        if let Some(hitstun) = &bot_state.hitstun {
-            commands.entity(bot_e).insert(hitstun.clone());
-        }
-
-        // Add hits
-        for hit_state in &ev.game_state.hits {
-            let transform =
-                TransformBundle::from(Transform::from_translation(hit_state.pos.extend(0.0)));
-            let collider = Collider::cuboid(hit_state.extents.x, hit_state.extents.y);
-            let hit_e = commands
-                .spawn((hit_state.hit.clone(), collider, transform))
-                .id();
-            if hit_state.projectile.is_none() {
-                commands.entity(hit_state.hit.owner).add_child(hit_e);
-            } else {
-                commands
-                    .entity(hit_e)
-                    .insert(hit_state.projectile.clone().unwrap());
-            }
-        }
+fn load_game_state(world: &mut World) {
+    let events = world.get_resource::<Events<LoadStateEvent>>().unwrap();
+    let mut reader = events.get_reader();
+    let mut snapshots = Vec::new();
+    for ev in reader.iter(events) {
+        snapshots.push(ev.game_state.ser_snapshot.as_ref().cloned().unwrap());
+    }
+    for snapshot in &snapshots {
+        world
+            .deserialize(&mut rmp_serde::Deserializer::new(snapshot.as_slice()))
+            .unwrap();
     }
 }

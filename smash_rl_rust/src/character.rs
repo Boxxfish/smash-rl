@@ -1,10 +1,11 @@
 use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
+use bevy_save::AppSaveableExt;
 use rand::Rng;
 
 use crate::{
     micro_fighter::{AppState, SCREEN_SIZE},
-    move_states::{FallState, StateTimer, CurrentMoveState, MoveState},
+    move_states::{CurrentMoveState, MoveState, StateTimer},
 };
 
 pub const CHAR_WIDTH: f32 = 20.0;
@@ -15,18 +16,28 @@ pub struct CharacterPlugin;
 impl Plugin for CharacterPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems((round_over_on_edge, random_actions).in_set(OnUpdate(AppState::Running)))
-            .add_event::<RoundOverEvent>();
+            .add_event::<RoundOverEvent>()
+            // Serialization
+            .register_type::<HorizontalDir>()
+            .register_saveable::<Character>()
+            .register_saveable::<CharAttrs>()
+            .register_saveable::<CharInput>()
+            .register_saveable::<Velocity>()
+            .register_saveable::<RigidBody>()
+            .register_saveable::<GravityScale>();
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq, Reflect, Default)]
 pub enum HorizontalDir {
+    #[default]
     Left,
     Right,
 }
 
 /// General data for all characters.
-#[derive(Component)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct Character {
     pub dir: HorizontalDir,
     pub damage: u32,
@@ -70,7 +81,9 @@ impl Default for CharBundle {
             grav_scale: GravityScale(10.0),
             sensor: Sensor,
             state_timer: StateTimer { frames: 0 },
-            curr_move_state: CurrentMoveState { move_state: MoveState::Idle },
+            curr_move_state: CurrentMoveState {
+                move_state: MoveState::Idle,
+            },
         }
     }
 }
@@ -97,7 +110,8 @@ impl Default for Player {
 pub struct Bot;
 
 /// Holds the character's input for this frame.
-#[derive(Component, Default)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct CharInput {
     pub shield: bool,
     pub jump: bool,
@@ -110,7 +124,8 @@ pub struct CharInput {
 }
 
 /// Stores character attributes.
-#[derive(Component, Clone, Copy)]
+#[derive(Component, Clone, Copy, Reflect)]
+#[reflect(Component)]
 pub struct CharAttrs {
     /// Height of a jump, in pixels.
     pub jump_height: u32,

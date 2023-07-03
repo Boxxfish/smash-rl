@@ -2,11 +2,12 @@ use std::marker::PhantomData;
 
 use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
+use bevy_save::AppSaveableExt;
 use pyo3::prelude::*;
 
 use crate::{
     character::{CharAttrs, CharInput, Character, HorizontalDir, CHAR_WIDTH},
-    hit::{Hit, HitBundle, HitType, Projectile, Hitstun},
+    hit::{Hit, HitBundle, HitType, Hitstun, Projectile},
     micro_fighter::{AppState, Floor, FIXED_TIMESTEP},
 };
 
@@ -106,20 +107,26 @@ impl Plugin for MoveStatesPlugin {
         >::default())
         .add_plugin(MoveStatePlugin::<GrabState, { MoveState::Grab as u32 }>::default())
         .add_plugin(MoveStatePlugin::<ShieldState, { MoveState::Shield as u32 }>::default())
-        .add_plugin(MoveStatePlugin::<HitstunState, { MoveState::Hitstun as u32 }>::default());
+        .add_plugin(MoveStatePlugin::<HitstunState, { MoveState::Hitstun as u32 }>::default())
+        // Serialization stuff
+        .register_type::<MoveState>()
+        .register_saveable::<CurrentMoveState>()
+        .register_saveable::<StateTimer>();
     }
 }
 
 /// Tracks the current move state.
-#[derive(Component)]
+#[derive(Component, Reflect, Default)]
+#[reflect(Component)]
 pub struct CurrentMoveState {
     pub move_state: MoveState,
 }
 
 /// Enumerates states a character can be in.
 #[pyclass]
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Reflect, Default)]
 pub enum MoveState {
+    #[default]
     Idle = 0,
     Run = 1,
     Jump = 2,
@@ -162,64 +169,58 @@ impl From<u32> for MoveState {
     }
 }
 
-/// Given a MoveState, adds the appropriate state to an entity.
-pub fn add_move_state(move_state: MoveState, entity: Entity, commands: &mut Commands) {
-    let mut e_cmds = commands.get_entity(entity).unwrap();
-    match move_state {
-        MoveState::Idle => e_cmds.insert(IdleState),
-        MoveState::Run => e_cmds.insert(RunState),
-        MoveState::Jump => e_cmds.insert(JumpState),
-        MoveState::Fall => e_cmds.insert(FallState),
-        MoveState::Shield => e_cmds.insert(ShieldState),
-        MoveState::Hitstun => e_cmds.insert(HitstunState),
-        MoveState::LightAttackStartup => e_cmds.insert(LightAttackStartupState),
-        MoveState::LightAttackHit => e_cmds.insert(LightAttackHitState),
-        MoveState::LightAttackRecovery => e_cmds.insert(LightAttackRecoveryState),
-        MoveState::HeavyAttackStartup => e_cmds.insert(HeavyAttackStartupState),
-        MoveState::HeavyAttackHit => e_cmds.insert(HeavyAttackHitState),
-        MoveState::HeavyAttackRecovery => e_cmds.insert(HeavyAttackRecoveryState),
-        MoveState::SpecialAttackStartup => e_cmds.insert(SpecialAttackStartupState),
-        MoveState::SpecialAttackHit => e_cmds.insert(SpecialAttackHitState),
-        MoveState::SpecialAttackRecovery => e_cmds.insert(SpecialAttackRecoveryState),
-        MoveState::Grab => e_cmds.insert(GrabState),
-    };
-}
-
-#[derive(Component)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct IdleState;
-#[derive(Component)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct RunState;
-#[derive(Component)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct JumpState;
-#[derive(Component)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct FallState;
-#[derive(Component)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct ShieldState;
-#[derive(Component)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct HitstunState;
-#[derive(Component)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct LightAttackStartupState;
-#[derive(Component)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct LightAttackHitState;
-#[derive(Component)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct LightAttackRecoveryState;
-#[derive(Component)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct HeavyAttackStartupState;
-#[derive(Component)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct HeavyAttackHitState;
-#[derive(Component)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct HeavyAttackRecoveryState;
-#[derive(Component)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct SpecialAttackStartupState;
-#[derive(Component)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct SpecialAttackHitState;
-#[derive(Component)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct SpecialAttackRecoveryState;
-#[derive(Component)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct GrabState;
 
 /// Holds the current frame since this state started.
-#[derive(Component)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct StateTimer {
     pub frames: u32,
 }
@@ -237,7 +238,9 @@ impl<T: Component, const U: u32> Default for MoveStatePlugin<T, U> {
     }
 }
 
-impl<T: Component, const U: u32> Plugin for MoveStatePlugin<T, U> {
+impl<T: Component + Reflect + bevy::reflect::GetTypeRegistration, const U: u32> Plugin
+    for MoveStatePlugin<T, U>
+{
     fn build(&self, app: &mut App) {
         app.add_systems(
             (
@@ -246,7 +249,8 @@ impl<T: Component, const U: u32> Plugin for MoveStatePlugin<T, U> {
                 update_move_state::<T, U>,
             )
                 .in_set(OnUpdate(AppState::Running)),
-        );
+        )
+        .register_saveable::<T>();
     }
 }
 

@@ -383,8 +383,8 @@ mod tests {
                     assert_eq!(h1.damage, h2.damage);
                     assert_eq!(h1.is_hit, h2.is_hit);
                     assert_eq!(h1.is_player, h2.is_player);
-                    assert!(h1.x.abs_diff(h2.x) <= 8);
-                    assert!(h1.y.abs_diff(h2.y) <= 8);
+                    assert!(h1.x.abs_diff(h2.x) <= 4);
+                    assert!(h1.y.abs_diff(h2.y) <= 4);
                     assert_eq!(h1.w, h2.w);
                     assert_eq!(h1.h, h2.h);
                 }
