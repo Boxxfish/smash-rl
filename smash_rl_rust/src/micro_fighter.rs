@@ -131,13 +131,12 @@ impl MicroFighter {
 
     /// Resets the environment.
     pub fn reset(&mut self) -> StepOutput {
+        *self = Self::new(false);
         if self.first_step {
             self.app.setup();
             self.app.update();
             self.first_step = false;
         }
-        self.app.world.send_event(ResetEvent);
-        self.app.update();
         self.get_state()
     }
 
