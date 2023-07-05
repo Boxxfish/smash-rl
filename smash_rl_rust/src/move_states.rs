@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 use crate::{
     character::{CharAttrs, CharInput, Character, HorizontalDir, CHAR_WIDTH},
     hit::{Hit, HitBundle, HitType, Hitstun, Projectile},
-    micro_fighter::{AppState, Floor, FIXED_TIMESTEP},
+    micro_fighter::{AppState, FIXED_TIMESTEP},
 };
 
 const JUMP_VEL: f32 = 500.0;
@@ -243,14 +243,13 @@ impl<T: Component + Reflect + bevy::reflect::GetTypeRegistration, const U: u32> 
 {
     fn build(&self, app: &mut App) {
         app.add_systems(
-            (
-                reset_state_timer::<T>,
-                exit_on_hitstun::<T>,
-                update_move_state::<T, U>,
-            )
-                .in_set(OnUpdate(AppState::Running)),
+            (reset_state_timer::<T>, update_move_state::<T, U>).in_set(OnUpdate(AppState::Running)),
         )
         .register_saveable::<T>();
+        // TODO: Just add manual system for hitstun instead of adding edge case?
+        if U != MoveState::Hitstun as u32 {
+            app.add_system(exit_on_hitstun::<T>.in_set(OnUpdate(AppState::Running)));
+        }
     }
 }
 
@@ -294,7 +293,7 @@ fn handle_idle(
 ) {
     for (e, char_inpt, mut character) in char_query.iter_mut() {
         if char_inpt.jump {
-            commands.entity(e).insert(JumpState).remove::<IdleState>();
+            commands.entity(e).insert((JumpState, GravityScale(0.0))).remove::<IdleState>();
         } else if char_inpt.left {
             character.dir = HorizontalDir::Left;
             commands.entity(e).insert(RunState).remove::<IdleState>();
@@ -389,22 +388,12 @@ fn handle_jump(
 
 fn handle_fall(
     mut char_query: Query<(Entity, &CharInput, &mut Velocity, &Character), With<FallState>>,
-    floor_query: Query<Entity, With<Floor>>,
     mut commands: Commands,
-    mut ev_collision: EventReader<CollisionEvent>,
 ) {
     // Go to idle if touching floor
-    for ev in ev_collision.iter() {
-        for (e, _, _, character) in char_query.iter() {
-            let floor_e = floor_query.single();
-            if let CollisionEvent::Started(e1, e2, _) = ev {
-                let floor_collider = character.floor_collider.unwrap();
-                if (*e1 == floor_collider || *e2 == floor_collider)
-                    && (*e1 == floor_e || *e2 == floor_e)
-                {
-                    commands.entity(e).insert(IdleState).remove::<FallState>();
-                }
-            }
+    for (e, _, _, character) in char_query.iter() {
+        if character.on_floor {
+            commands.entity(e).insert(IdleState).remove::<FallState>();
         }
     }
 
@@ -704,38 +693,21 @@ fn handle_grab_end(
 }
 
 fn handle_hitstun(
-    mut char_query: Query<(Entity, &Character, &HitstunState, &Hitstun, &StateTimer)>,
-    floor_query: Query<Entity, With<Floor>>,
+    char_query: Query<(Entity, &Character, &Hitstun, &StateTimer), With<HitstunState>>,
     mut commands: Commands,
-    mut ev_collision: EventReader<CollisionEvent>,
 ) {
-    for (e, character, hitstun_state, hitstun, timer) in char_query.iter_mut() {
-        if timer.frames == hitstun.frames {
-            // Check if on ground
-            let mut on_ground = false;
-            let floor_e = floor_query.single();
-            for ev in ev_collision.iter() {
-                if let CollisionEvent::Started(e1, e2, _) = ev {
-                    let floor_collider = character.floor_collider.unwrap();
-                    if (*e1 == floor_collider || *e2 == floor_collider)
-                        && (*e1 == floor_e || *e2 == floor_e)
-                    {
-                        on_ground = true;
-                        break;
-                    }
-                }
-            }
-
-            if on_ground {
+    for (e, character, hitstun, timer) in char_query.iter() {
+        if timer.frames >= hitstun.frames {
+            if character.on_floor {
                 commands
                     .entity(e)
-                    .insert(IdleState)
+                    .insert((IdleState, GravityScale(10.0)))
                     .remove::<HitstunState>()
                     .remove::<Hitstun>();
             } else {
                 commands
                     .entity(e)
-                    .insert(FallState)
+                    .insert((FallState, GravityScale(10.0)))
                     .remove::<HitstunState>()
                     .remove::<Hitstun>();
             }

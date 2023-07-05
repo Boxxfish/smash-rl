@@ -150,8 +150,9 @@ pub struct Hitstun {
 /// Causes characters to go flying when hit.
 fn compute_hit_interactions(
     mut hit_query: Query<&mut Hit>,
-    mut char_query: Query<&mut Character, With<Character>>,
+    mut char_query: Query<&mut Character>,
     mut ev_collision: EventReader<CollisionEvent>,
+    hitstun_query: Query<Entity, With<Hitstun>>,
     mut commands: Commands,
 ) {
     for ev in ev_collision.iter() {
@@ -180,6 +181,11 @@ fn compute_hit_interactions(
 
             // If the character has already been hit, skip
             if hit.chars_hit.contains(&char_e) {
+                continue;
+            }
+
+            // If the character is already in hitstun, skip
+            if hitstun_query.contains(char_e) {
                 continue;
             }
 

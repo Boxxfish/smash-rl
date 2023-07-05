@@ -4,7 +4,7 @@ use bevy_save::AppSaveableExt;
 use rand::Rng;
 
 use crate::{
-    micro_fighter::{AppState, SCREEN_SIZE},
+    micro_fighter::{AppState, Floor, SCREEN_SIZE},
     move_states::{CurrentMoveState, MoveState, StateTimer},
 };
 
@@ -15,16 +15,19 @@ pub struct CharacterPlugin;
 
 impl Plugin for CharacterPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems((round_over_on_edge, random_actions).in_set(OnUpdate(AppState::Running)))
-            .add_event::<RoundOverEvent>()
-            // Serialization
-            .register_type::<HorizontalDir>()
-            .register_saveable::<Character>()
-            .register_saveable::<CharAttrs>()
-            .register_saveable::<CharInput>()
-            .register_saveable::<Velocity>()
-            .register_saveable::<RigidBody>()
-            .register_saveable::<GravityScale>();
+        app.add_systems(
+            (round_over_on_edge, random_actions, update_touching_floor)
+                .in_set(OnUpdate(AppState::Running)),
+        )
+        .add_event::<RoundOverEvent>()
+        // Serialization
+        .register_type::<HorizontalDir>()
+        .register_saveable::<Character>()
+        .register_saveable::<CharAttrs>()
+        .register_saveable::<CharInput>()
+        .register_saveable::<Velocity>()
+        .register_saveable::<RigidBody>()
+        .register_saveable::<GravityScale>();
     }
 }
 
@@ -43,6 +46,7 @@ pub struct Character {
     pub damage: u32,
     pub floor_collider: Option<Entity>,
     pub shielding: bool,
+    pub on_floor: bool,
 }
 
 /// Components for characters.
@@ -77,6 +81,7 @@ impl Default for CharBundle {
                 floor_collider: None,
                 damage: 0,
                 shielding: false,
+                on_floor: false,
             },
             grav_scale: GravityScale(10.0),
             sensor: Sensor,
@@ -221,6 +226,34 @@ fn round_over_on_edge(
         {
             let player_won = player.is_none();
             ev_round_over.send(RoundOverEvent { player_won });
+        }
+    }
+}
+
+/// Tracks if a character is touching the floor.
+fn update_touching_floor(
+    mut char_query: Query<(Entity, &mut Character)>,
+    mut ev_collision: EventReader<CollisionEvent>,
+    floor_query: Query<Entity, With<Floor>>,
+) {
+    for ev in ev_collision.iter() {
+        for (e, mut character) in char_query.iter_mut() {
+            let floor_e = floor_query.single();
+            let floor_collider = character.floor_collider.unwrap();
+            if let CollisionEvent::Started(e1, e2, _) = ev {
+                if (*e1 == floor_collider || *e2 == floor_collider)
+                    && (*e1 == floor_e || *e2 == floor_e)
+                {
+                    character.on_floor = true;
+                }
+            }
+            if let CollisionEvent::Stopped(e1, e2, _) = ev {
+                if (*e1 == floor_collider || *e2 == floor_collider)
+                    && (*e1 == floor_e || *e2 == floor_e)
+                {
+                    character.on_floor = false;
+                }
+            }
         }
     }
 }

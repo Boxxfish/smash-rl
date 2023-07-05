@@ -9,7 +9,7 @@ env.reset()
 action_space = env.action_space
 while True:
     env.bot_step(action_space.sample())
-    _obs, _reward, _truncated, terminated, _info = env.step(action_space.sample())
+    _obs, _reward, terminated, _truncated, _info = env.step(action_space.sample())
     env.render()
     if terminated:
         env.reset()

@@ -183,6 +183,10 @@ class MFEnv(gym.Env):
             state_channel = state_channel * inv_box_arr + box_arr * (
                 int(hbox.move_state) / 8
             )
+            if hbox.is_player:
+                print(f"Player state: {hbox.move_state}")
+            else:
+                print(f"Bot state: {hbox.move_state}")
             box_channel = box_channel * inv_box_arr + box_arr
         return [
             hit_channel,
