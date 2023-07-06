@@ -5,7 +5,6 @@ use bevy_save::AppSaveableExt;
 use crate::{
     character::{Character, HorizontalDir},
     micro_fighter::AppState,
-    move_states::HitstunState,
 };
 
 /// Conversion of knockback units to velocity.
@@ -204,7 +203,6 @@ fn compute_hit_interactions(
                         impulse,
                         ..default()
                     })
-                    .insert(HitstunState)
                     .insert(Hitstun {
                         frames: hitstun_frames,
                     });
@@ -225,7 +223,6 @@ fn compute_hit_interactions(
                         impulse,
                         ..default()
                     })
-                    .insert(HitstunState)
                     .insert(Hitstun {
                         frames: hitstun_frames,
                     });

@@ -16,7 +16,11 @@ pub struct CharacterPlugin;
 impl Plugin for CharacterPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
-            (round_over_on_edge, random_actions, update_touching_floor)
+            (
+                round_over_on_edge,
+                random_actions,
+                update_touching_floor,
+            )
                 .in_set(OnUpdate(AppState::Running)),
         )
         .add_event::<RoundOverEvent>()

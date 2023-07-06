@@ -270,12 +270,12 @@ fn update_move_state<T: Component, const U: u32>(
 }
 
 fn exit_on_hitstun<T: Component>(
-    char_query: Query<(Entity, Option<&T>), Added<HitstunState>>,
+    char_query: Query<(Entity, Option<&T>), Added<Hitstun>>,
     mut commands: Commands,
 ) {
     for (e, state) in char_query.iter() {
         if state.is_some() {
-            commands.entity(e).remove::<T>();
+            commands.entity(e).remove::<T>().insert(HitstunState);
         }
     }
 }
@@ -412,7 +412,7 @@ fn handle_light_attack_startup(
     mut commands: Commands,
 ) {
     for (e, char_attrs, timer) in char_query.iter() {
-        if timer.frames == char_attrs.light_startup {
+        if timer.frames >= char_attrs.light_startup {
             commands
                 .entity(e)
                 .insert(LightAttackHitState)
@@ -447,7 +447,7 @@ fn handle_light_attack_hit(
     mut commands: Commands,
 ) {
     for (e, timer) in char_query.iter() {
-        if timer.frames == 4 {
+        if timer.frames >= 4 {
             commands
                 .entity(e)
                 .insert(LightAttackRecoveryState)
@@ -475,7 +475,7 @@ fn handle_light_attack_recovery(
     mut commands: Commands,
 ) {
     for (e, char_attrs, timer) in char_query.iter() {
-        if timer.frames == char_attrs.light_recovery {
+        if timer.frames >= char_attrs.light_recovery {
             commands
                 .entity(e)
                 .insert(IdleState)
@@ -489,7 +489,7 @@ fn handle_heavy_attack_startup(
     mut commands: Commands,
 ) {
     for (e, char_attrs, timer) in char_query.iter() {
-        if timer.frames == char_attrs.heavy_startup {
+        if timer.frames >= char_attrs.heavy_startup {
             commands
                 .entity(e)
                 .insert(HeavyAttackHitState)
@@ -524,7 +524,7 @@ fn handle_heavy_attack_hit(
     mut commands: Commands,
 ) {
     for (e, timer) in char_query.iter() {
-        if timer.frames == 4 {
+        if timer.frames >= 4 {
             commands
                 .entity(e)
                 .insert(HeavyAttackRecoveryState)
@@ -552,7 +552,7 @@ fn handle_heavy_attack_recovery(
     mut commands: Commands,
 ) {
     for (e, char_attrs, timer) in char_query.iter() {
-        if timer.frames == char_attrs.heavy_recovery {
+        if timer.frames >= char_attrs.heavy_recovery {
             commands
                 .entity(e)
                 .insert(IdleState)
@@ -594,7 +594,7 @@ fn handle_special_attack_startup(
     mut commands: Commands,
 ) {
     for (e, char_attrs, timer) in char_query.iter() {
-        if timer.frames == char_attrs.projectile_startup {
+        if timer.frames >= char_attrs.projectile_startup {
             commands
                 .entity(e)
                 .insert(SpecialAttackHitState)
@@ -640,7 +640,7 @@ fn handle_special_attack_recovery(
     mut commands: Commands,
 ) {
     for (e, char_attrs, timer) in char_query.iter() {
-        if timer.frames == char_attrs.heavy_recovery {
+        if timer.frames >= char_attrs.heavy_recovery {
             commands
                 .entity(e)
                 .insert(IdleState)
@@ -672,7 +672,7 @@ fn handle_grab_start(
 
 fn handle_grab(char_query: Query<(Entity, &StateTimer), With<GrabState>>, mut commands: Commands) {
     for (e, timer) in char_query.iter() {
-        if timer.frames == GRAB_RECOVERY {
+        if timer.frames >= GRAB_RECOVERY {
             commands.entity(e).insert(IdleState).remove::<GrabState>();
         }
     }

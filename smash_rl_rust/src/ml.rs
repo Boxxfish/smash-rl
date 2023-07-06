@@ -23,7 +23,7 @@ impl Plugin for MLPlugin {
             .insert_resource(GameState::default())
             .configure_set(
                 MLBaseSet::MLWork
-                    .after(CoreSet::Update)
+                    .after(CoreSet::PostUpdate)
                     .run_if(in_state(AppState::Running)),
             )
             .add_systems(
