@@ -40,7 +40,8 @@ target_update = 200  # Number of iterations before updating Q target.
 num_frames = 4  # Number of frames in frame stack.
 max_skip_frames = 4  # Max number of frames to skip.
 time_limit = 500  # Time limit before truncation.
-bot_update = 1000  # Number of iterations before updating the bot.
+bot_update = 1000  # Number of iterations before caching the current policy.
+max_bots = 6 # Maximum number of iterations.
 device = torch.device("cuda")
 
 
@@ -60,9 +61,9 @@ class QNet(nn.Module):
         nn.Module.__init__(self)
         channels = obs_shape[0] * obs_shape[1]  # Frames times channels
         self.net = nn.Sequential(
-            nn.Conv2d(channels, 12, 3, stride=2),
+            nn.Conv2d(channels, 16, 3, stride=2),
             nn.ReLU(),
-            nn.Conv2d(12, 32, 3, stride=2),
+            nn.Conv2d(16, 32, 3, stride=2),
             nn.ReLU(),
             nn.Conv2d(32, 64, 3, stride=2),
             nn.ReLU(),
@@ -70,13 +71,13 @@ class QNet(nn.Module):
         self.net2 = nn.Sequential(
             nn.Linear(64, 64),
             nn.ReLU(),
-            nn.Linear(64, 64),
+            nn.Linear(64, 128),
             nn.ReLU(),
         )
         self.advantage = nn.Sequential(
-            nn.Linear(64, 64), nn.ReLU(), nn.Linear(64, action_count)
+            nn.Linear(128, 128), nn.ReLU(), nn.Linear(128, action_count)
         )
-        self.value = nn.Sequential(nn.Linear(64, 64), nn.ReLU(), nn.Linear(64, 1))
+        self.value = nn.Sequential(nn.Linear(128, 128), nn.ReLU(), nn.Linear(128, 1))
         self.action_count = action_count
         init_orthogonal(self)
 
@@ -161,8 +162,10 @@ q_net_target = copy.deepcopy(q_net)
 q_net_target.to(device)
 q_opt = torch.optim.Adam(q_net.parameters(), lr=q_lr)
 
-# Bot Q network
+# Bot Q networks
+bot_q_nets = [q_net.state_dict()]
 bot_q_net = copy.deepcopy(q_net)
+bot_q_index = 0
 
 # A replay buffer stores experience collected over all sampling runs
 buffer = ReplayBuffer(
@@ -206,6 +209,8 @@ for step in tqdm(range(iterations), position=0):
 
                 if dones or truncs:
                     obs = torch.Tensor(env.reset()[0]).float().unsqueeze(0)
+                    # Change opponent
+                    bot_q_net.load_state_dict(random.choice(bot_q_nets))
             except:
                 obs = torch.Tensor(env.reset()[0]).float().unsqueeze(0)
 
@@ -267,9 +272,13 @@ for step in tqdm(range(iterations), position=0):
         if (step + 1) % target_update == 0:
             q_net_target.load_state_dict(q_net.state_dict())
 
-        # Update bot Q net
+        # Update bot Q nets
         if (step + 1) % bot_update == 0:
-            bot_q_net.load_state_dict(q_net.state_dict())
+            if len(bot_q_nets) < max_bots:
+                bot_q_nets.append(q_net.state_dict())
+            else:
+                bot_q_index = (bot_q_index + 1) % max_bots
+                bot_q_nets[bot_q_index] = q_net.state_dict()
 
         # Save
         if (step + 1) % 100 == 0:
