@@ -124,6 +124,12 @@ class MFEnv(gym.Env):
         self, *args, seed=None, options=None
     ) -> tuple[np.ndarray, dict[str, Any]]:
         step_output = self.game.reset()
+        self.player_frame_stack = [
+            np.zeros([5, IMG_SIZE, IMG_SIZE]) for _ in range(self.num_frames)
+        ]
+        self.bot_frame_stack = [
+            np.zeros([5, IMG_SIZE, IMG_SIZE]) for _ in range(self.num_frames)
+        ]
         channels = self.gen_channels(step_output, is_player=True)
         self.insert_obs(np.stack(channels), self.player_frame_stack)
         bot_channels = self.gen_channels(step_output, is_player=False)

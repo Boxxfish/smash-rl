@@ -25,7 +25,6 @@ _: Any
 INF = 10**8
 
 # Hyperparameters
-num_envs = 1  # Number of environments to step through at once during sampling.
 train_steps = 128  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
 iterations = 100000  # Number of sample/train iterations.
 train_iters = 1  # Number of passes over the samples collected.
@@ -41,7 +40,7 @@ target_update = 200  # Number of iterations before updating Q target.
 num_frames = 4  # Number of frames in frame stack.
 max_skip_frames = 4  # Max number of frames to skip.
 time_limit = 500  # Time limit before truncation.
-bot_update = 500  # Number of iterations before updating the bot.
+bot_update = 1000  # Number of iterations before updating the bot.
 device = torch.device("cuda")
 
 
@@ -50,6 +49,7 @@ parser = ArgumentParser()
 parser.add_argument("--eval", action="store_true")
 parser.add_argument("--resume", action="store_true")
 args = parser.parse_args()
+
 
 class QNet(nn.Module):
     def __init__(
@@ -60,11 +60,11 @@ class QNet(nn.Module):
         nn.Module.__init__(self)
         channels = obs_shape[0] * obs_shape[1]  # Frames times channels
         self.net = nn.Sequential(
-            nn.Conv2d(channels, 8, 3, stride=2),
+            nn.Conv2d(channels, 12, 3, stride=2),
             nn.ReLU(),
-            nn.Conv2d(8, 12, 3, stride=2),
+            nn.Conv2d(12, 32, 3, stride=2),
             nn.ReLU(),
-            nn.Conv2d(12, 64, 3, stride=2),
+            nn.Conv2d(32, 64, 3, stride=2),
             nn.ReLU(),
         )
         self.net2 = nn.Sequential(
@@ -73,7 +73,6 @@ class QNet(nn.Module):
             nn.Linear(64, 64),
             nn.ReLU(),
         )
-        self.relu = nn.ReLU()
         self.advantage = nn.Sequential(
             nn.Linear(64, 64), nn.ReLU(), nn.Linear(64, action_count)
         )
@@ -91,34 +90,27 @@ class QNet(nn.Module):
         return value + advantage - advantage.mean(1, keepdim=True)
 
 
-env = SyncVectorEnv(
-    [
-        (
-            lambda: TimeLimit(
-                    MFEnv(max_skip_frames=max_skip_frames, num_frames=num_frames),
-                time_limit,
-            )
-        )
-        for _ in range(num_envs)
-    ]
+env = TimeLimit(
+    MFEnv(max_skip_frames=max_skip_frames, num_frames=num_frames),
+    time_limit,
 )
 test_env = MFEnv(max_skip_frames=max_skip_frames, num_frames=num_frames)
 
 # If evaluating, load the latest policy
 if args.eval:
     eval_done = False
-    obs_space = env.single_observation_space
-    act_space = env.single_action_space
+    obs_space = env.observation_space
+    act_space = env.action_space
     assert isinstance(obs_space, gym.spaces.Box)
     assert isinstance(act_space, gym.spaces.Discrete)
     q_net = QNet(torch.Size(obs_space.shape), int(act_space.n))
     q_net.load_state_dict(torch.load("temp/q_net.pt"))
     test_env = MFEnv(
-            max_skip_frames=max_skip_frames,
-            render_mode="human",
-            view_channels=(0, 2, 4),
-            num_frames=num_frames
-        )
+        max_skip_frames=max_skip_frames,
+        render_mode="human",
+        view_channels=(0, 2, 4),
+        num_frames=num_frames,
+    )
     with torch.no_grad():
         reward_total = 0.0
         obs_, info = test_env.reset()
@@ -145,7 +137,6 @@ wandb.init(
     entity=smash_rl.conf.entity,
     config={
         "experiment": "micro fighter dqn",
-        "num_envs": num_envs,
         "train_steps": train_steps,
         "train_iters": train_iters,
         "train_batch_size": train_batch_size,
@@ -161,8 +152,8 @@ wandb.init(
 )
 
 # Initialize Q network
-obs_space = env.single_observation_space
-act_space = env.single_action_space
+obs_space = env.observation_space
+act_space = env.action_space
 assert isinstance(obs_space, gym.spaces.Box)
 assert isinstance(act_space, gym.spaces.Discrete)
 q_net = QNet(torch.Size(obs_space.shape), int(act_space.n))
@@ -180,8 +171,7 @@ buffer = ReplayBuffer(
     buffer_size,
 )
 
-obs = torch.Tensor(env.reset()[0])
-done = False
+obs = torch.Tensor(env.reset()[0]).float().unsqueeze(0)
 for step in tqdm(range(iterations), position=0):
     percent_done = step / iterations
     q_epsilon_real = q_epsilon * max(1.0 - percent_done, 0.05)
@@ -190,35 +180,35 @@ for step in tqdm(range(iterations), position=0):
     with torch.no_grad():
         for _ in range(train_steps):
             bot_q_vals = bot_q_net(
-                torch.from_numpy(test_env.bot_obs()).float().unsqueeze(0)
+                torch.from_numpy(env.bot_obs()).float().unsqueeze(0)
             ).squeeze()
             bot_action = bot_q_vals.argmax(0).item()
-            test_env.bot_step(bot_action)
+            env.bot_step(bot_action)
 
-            if (
-                random.random() < q_epsilon_real
-                or step < warmup_steps
-            ):
-                actions_list = [
-                    random.randrange(0, int(act_space.n)) for _ in range(num_envs)
-                ]
-                actions_ = np.array(actions_list)
+            if random.random() < q_epsilon_real or step < warmup_steps:
+                action = random.randrange(0, int(act_space.n))
             else:
                 q_vals = q_net(obs)
-                actions_ = q_vals.argmax(1).numpy()
-            obs_, rewards, dones, truncs, _ = env.step(actions_)
-            next_obs = torch.from_numpy(obs_)
-            buffer.insert_step(
-                obs,
-                next_obs,
-                torch.from_numpy(actions_).squeeze(0),
-                list(rewards),
-                list(dones),
-                None,
-                None,
-            )
-            obs = next_obs
-            
+                action = q_vals.argmax(1).item()
+            try:
+                obs_, rewards, dones, truncs, _ = env.step(action)
+                next_obs = torch.from_numpy(obs_).float().unsqueeze(0)
+                buffer.insert_step(
+                    obs,
+                    next_obs,
+                    torch.tensor([action]).squeeze(0),
+                    [rewards],
+                    [dones],
+                    None,
+                    None,
+                )
+                obs = next_obs
+
+                if dones or truncs:
+                    obs = torch.Tensor(env.reset()[0]).float().unsqueeze(0)
+            except:
+                obs = torch.Tensor(env.reset()[0]).float().unsqueeze(0)
+
     # Train
     if buffer.filled:
         total_q_loss = train_dqn(

@@ -206,7 +206,7 @@ impl Default for CharAttrs {
             throw_dmg: 6,
             projectile_speed: 8,
             projectile_size: 8,
-            projectile_startup: 4,
+            projectile_startup: 20,
             projectile_recovery: 2,
             projectile_dmg: 4,
             projectile_lifetime: 30,
