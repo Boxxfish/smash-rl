@@ -20,6 +20,7 @@ impl Plugin for MLPlugin {
             .add_plugin(HierarchyPlugin)
             .add_plugins(SavePlugins)
             .insert_resource(HBoxCollection::default())
+            .insert_resource(NetDamage::default())
             .insert_resource(GameState::default())
             .configure_set(
                 MLBaseSet::MLWork
@@ -33,6 +34,7 @@ impl Plugin for MLPlugin {
                     collect_hboxes,
                     update_game_state,
                     load_game_state,
+                    update_net_dmg,
                 )
                     .in_base_set(MLBaseSet::MLWork),
             )
@@ -90,6 +92,14 @@ pub struct HBox {
 #[derive(Resource, Default)]
 pub struct HBoxCollection {
     pub hboxes: Vec<HBox>,
+}
+
+/// Holds the net damage done by the player this frame.
+#[derive(Resource, Default)]
+pub struct NetDamage {
+    pub last_player_damage: u32,
+    pub last_opp_damage: u32,
+    pub net_dmg: i32,
 }
 
 /// Updates the HBoxCollection.
@@ -166,6 +176,21 @@ fn collect_hboxes(
         };
         hbox_coll.hboxes.push(hbox);
     }
+}
+
+/// Updates player and opponent damage tracking.
+fn update_net_dmg(
+    player_query: Query<&Character, With<Player>>,
+    bot_query: Query<&Character, With<Bot>>,
+    mut net_dmg: ResMut<NetDamage>,
+) {
+    let player = player_query.single();
+    let bot = bot_query.single();
+    let delta_player_dmg = player.damage as i32 - net_dmg.last_player_damage as i32;
+    let delta_opp_dmg = bot.damage as i32 - net_dmg.last_opp_damage as i32;
+    net_dmg.net_dmg = delta_player_dmg - delta_opp_dmg;
+    net_dmg.last_player_damage = player.damage;
+    net_dmg.last_opp_damage = bot.damage;
 }
 
 /// Event indicating the ML player has taken an action.
@@ -250,18 +275,6 @@ fn handle_ml_bot_input(
 #[derive(Resource, Default, Clone)]
 pub struct GameState {
     pub ser_snapshot: Option<Vec<u8>>,
-}
-
-/// Stores the current state of a character.
-#[derive(Clone)]
-pub struct CharGameState {
-    pub pos: Vec2,
-    pub vel: Vec2,
-    pub damage: u32,
-    pub state: MoveState,
-    pub attrs: CharAttrs,
-    pub frame_counter: u32,
-    pub hitstun: Option<Hitstun>,
 }
 
 /// Stores the state of a hit.

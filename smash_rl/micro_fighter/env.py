@@ -13,8 +13,8 @@ import pygame
 
 from smash_rl_rust import GameState
 
-IMG_SIZE = 32
-IMG_SCALE = 16
+IMG_SIZE = 64
+IMG_SCALE = 8
 
 
 class EnvState:
@@ -86,6 +86,7 @@ class MFEnv(gym.Env):
         self.action_space = gym.spaces.Discrete(9)
         self.render_mode = render_mode
         self.num_frames = num_frames
+        self.dmg_reward_amount = 0.0
         self.player_frame_stack = [
             np.zeros([5, IMG_SIZE, IMG_SIZE]) for _ in range(self.num_frames)
         ]
@@ -114,9 +115,11 @@ class MFEnv(gym.Env):
         self.insert_obs(np.stack(bot_channels), self.bot_frame_stack)
 
         terminated = step_output.round_over
-        reward = 0.0
+        round_reward = 0.0
         if terminated:
-            reward = 1.0 if step_output.player_won else -1.0
+            round_reward = 1.0 if step_output.player_won else -1.0
+        dmg_reward = step_output.net_damage / 100
+        reward = dmg_reward * (self.dmg_reward_amount) + round_reward
 
         return np.stack(self.player_frame_stack), reward, terminated, False, {}
 
@@ -137,7 +140,7 @@ class MFEnv(gym.Env):
         return np.stack(self.player_frame_stack), {}
 
     def gen_channels(
-        self, step_output: StepOutput, is_player: bool = False
+        self, step_output: StepOutput, is_player: bool
     ) -> List[np.ndarray]:
         """
         Converts `step_output` into observation channels.
@@ -258,3 +261,9 @@ class MFEnv(gym.Env):
         self.player_frame_stack = state.player_frame_stack
         self.bot_frame_stack = state.bot_frame_stack
         self.game.load_state(state.game_state)
+
+    def set_dmg_reward_amount(self, amount: float):
+        """
+        Sets how much the damage reward will be added to the overall reward.
+        """
+        self.dmg_reward_amount = amount

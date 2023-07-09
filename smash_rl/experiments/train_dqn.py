@@ -25,9 +25,9 @@ _: Any
 INF = 10**8
 
 # Hyperparameters
-train_steps = 128  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
-iterations = 100000  # Number of sample/train iterations.
-train_iters = 1  # Number of passes over the samples collected.
+train_steps = 32  # Number of steps to step through during sampling.
+iterations = 10000  # Number of sample/train iterations.
+train_iters = 4  # Number of passes over the samples collected.
 train_batch_size = 64  # Minibatch size while training models.
 discount = 0.99  # Discount factor applied to rewards.
 q_epsilon = 0.9  # Epsilon for epsilon greedy strategy. This gets annealed over time.
@@ -35,12 +35,12 @@ eval_steps = 1  # Number of eval runs to average over.
 max_eval_steps = 100  # Max number of steps to take during each eval run.
 q_lr = 0.0001  # Learning rate of the q net.
 warmup_steps = 500  # For the first n number of steps, we will only sample randomly.
-buffer_size = 2000  # Number of elements that can be stored in the buffer.
-target_update = 200  # Number of iterations before updating Q target.
+buffer_size = 10000  # Number of elements that can be stored in the buffer.
+target_update = 100  # Number of iterations before updating Q target.
 num_frames = 4  # Number of frames in frame stack.
 max_skip_frames = 4  # Max number of frames to skip.
 time_limit = 500  # Time limit before truncation.
-bot_update = 1000  # Number of iterations before caching the current policy.
+bot_update = 500  # Number of iterations before caching the current policy.
 max_bots = 6 # Maximum number of iterations.
 device = torch.device("cuda")
 
@@ -157,6 +157,7 @@ obs_space = env.observation_space
 act_space = env.action_space
 assert isinstance(obs_space, gym.spaces.Box)
 assert isinstance(act_space, gym.spaces.Discrete)
+assert isinstance(env.env, MFEnv)
 q_net = QNet(torch.Size(obs_space.shape), int(act_space.n))
 q_net_target = copy.deepcopy(q_net)
 q_net_target.to(device)
@@ -178,6 +179,7 @@ obs = torch.Tensor(env.reset()[0]).float().unsqueeze(0)
 for step in tqdm(range(iterations), position=0):
     percent_done = step / iterations
     q_epsilon_real = q_epsilon * max(1.0 - percent_done, 0.05)
+    env.env.set_dmg_reward_amount(1.0 - percent_done)
 
     # Collect experience
     with torch.no_grad():
@@ -228,40 +230,43 @@ for step in tqdm(range(iterations), position=0):
         )
 
         # Evaluate the network's performance after this training iteration.
-        eval_done = False
-        with torch.no_grad():
-            reward_total = 0.0
-            pred_reward_total = 0
-            obs_, info = test_env.reset()
-            eval_obs = torch.from_numpy(np.array(obs_)).float()
-            for _ in range(eval_steps):
-                steps_taken = 0
-                score = 0
-                for _ in range(max_eval_steps):
-                    bot_q_vals = bot_q_net(
-                        torch.from_numpy(test_env.bot_obs()).float().unsqueeze(0)
-                    ).squeeze()
-                    bot_action = bot_q_vals.argmax(0).item()
-                    test_env.bot_step(bot_action)
+        # eval_done = False
+        # with torch.no_grad():
+        #     reward_total = 0.0
+        #     pred_reward_total = 0
+        #     obs_, info = test_env.reset()
+        #     eval_obs = torch.from_numpy(np.array(obs_)).float()
+        #     for _ in range(eval_steps):
+        #         try:
+        #             steps_taken = 0
+        #             score = 0
+        #             for _ in range(max_eval_steps):
+        #                 bot_q_vals = bot_q_net(
+        #                     torch.from_numpy(test_env.bot_obs()).float().unsqueeze(0)
+        #                 ).squeeze()
+        #                 bot_action = bot_q_vals.argmax(0).item()
+        #                 test_env.bot_step(bot_action)
 
-                    q_vals = q_net(eval_obs.unsqueeze(0)).squeeze()
-                    action = q_vals.argmax(0).item()
-                    pred_reward_total += (
-                        q_net(eval_obs.unsqueeze(0)).squeeze().max(0).values.item()
-                    )
-                    obs_, reward, eval_done, eval_trunc, _ = test_env.step(action)
-                    eval_obs = torch.from_numpy(np.array(obs_)).float()
-                    steps_taken += 1
-                    reward_total += reward
-                    if eval_done or eval_trunc:
-                        obs_, info = test_env.reset()
-                        eval_obs = torch.from_numpy(np.array(obs_)).float()
-                        break
+        #                 q_vals = q_net(eval_obs.unsqueeze(0)).squeeze()
+        #                 action = q_vals.argmax(0).item()
+        #                 pred_reward_total += (
+        #                     q_net(eval_obs.unsqueeze(0)).squeeze().max(0).values.item()
+        #                 )
+        #                 obs_, reward, eval_done, eval_trunc, _ = test_env.step(action)
+        #                 eval_obs = torch.from_numpy(np.array(obs_)).float()
+        #                 steps_taken += 1
+        #                 reward_total += reward
+        #                 if eval_done or eval_trunc:
+        #                     obs_, info = test_env.reset()
+        #                     eval_obs = torch.from_numpy(np.array(obs_)).float()
+        #                     break
+        #         except:
+        #             pass
 
         wandb.log(
             {
                 "avg_eval_episode_reward": reward_total / eval_steps,
-                "avg_eval_episode_predicted_reward": pred_reward_total / eval_steps,
+                # "avg_eval_episode_predicted_reward": pred_reward_total / eval_steps,
                 "avg_q_loss": total_q_loss / train_iters,
                 "q_lr": q_opt.param_groups[-1]["lr"],
                 "epsilon": q_epsilon_real,
@@ -281,5 +286,5 @@ for step in tqdm(range(iterations), position=0):
                 bot_q_nets[bot_q_index] = q_net.state_dict()
 
         # Save
-        if (step + 1) % 100 == 0:
+        if (step + 1) % 10 == 0:
             torch.save(q_net.state_dict(), "temp/q_net.pt")

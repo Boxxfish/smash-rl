@@ -35,6 +35,7 @@ class StepOutput:
     round_over: bool
     player_won: bool
     game_state: GameState
+    net_damage: int
 
 class GameState:
     pass

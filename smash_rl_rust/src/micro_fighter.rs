@@ -12,6 +12,7 @@ use crate::ml::LoadStateEvent;
 use crate::ml::MLBotActionEvent;
 use crate::ml::MLPlayerActionEvent;
 use crate::ml::MLPlugin;
+use crate::ml::NetDamage;
 use crate::move_states::*;
 
 pub const FIXED_TIMESTEP: f32 = 1.0 / 60.0;
@@ -66,6 +67,10 @@ pub struct StepOutput {
     /// Whether the player won.
     #[pyo3(get)]
     pub player_won: bool,
+    /// The difference between the damage inflicted by the player and the damage
+    /// inflicted on the player.
+    #[pyo3(get)]
+    pub net_damage: i32,
 }
 
 /// Simple fighting game.
@@ -168,10 +173,12 @@ impl MicroFighter {
         };
 
         let hbox_coll = world.get_resource::<HBoxCollection>().unwrap();
+        let net_dmg = world.get_resource::<NetDamage>().unwrap();
         StepOutput {
             hboxes: hbox_coll.hboxes.clone(),
             round_over,
             player_won,
+            net_damage: net_dmg.net_dmg,
         }
     }
 
