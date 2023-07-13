@@ -25,12 +25,12 @@ _: Any
 INF = 10**8
 
 # Hyperparameters
-train_steps = 32  # Number of steps to step through during sampling.
-iterations = 10000  # Number of sample/train iterations.
-train_iters = 4  # Number of passes over the samples collected.
+train_steps = 64  # Number of steps to step through during sampling.
+iterations = 80000  # Number of sample/train iterations.
+train_iters = 8  # Number of passes over the samples collected.
 train_batch_size = 64  # Minibatch size while training models.
 discount = 0.99  # Discount factor applied to rewards.
-q_epsilon = 0.9  # Epsilon for epsilon greedy strategy. This gets annealed over time.
+q_epsilon = 0.5  # Epsilon for epsilon greedy strategy. This gets annealed over time.
 eval_steps = 1  # Number of eval runs to average over.
 max_eval_steps = 100  # Max number of steps to take during each eval run.
 q_lr = 0.0001  # Learning rate of the q net.
@@ -38,10 +38,10 @@ warmup_steps = 500  # For the first n number of steps, we will only sample rando
 buffer_size = 10000  # Number of elements that can be stored in the buffer.
 target_update = 100  # Number of iterations before updating Q target.
 num_frames = 4  # Number of frames in frame stack.
-max_skip_frames = 4  # Max number of frames to skip.
+max_skip_frames = 2  # Max number of frames to skip.
 time_limit = 500  # Time limit before truncation.
 bot_update = 500  # Number of iterations before caching the current policy.
-max_bots = 6 # Maximum number of iterations.
+max_bots = 6 # Maximum number of bots to store.
 device = torch.device("cuda")
 
 
@@ -61,23 +61,23 @@ class QNet(nn.Module):
         nn.Module.__init__(self)
         channels = obs_shape[0] * obs_shape[1]  # Frames times channels
         self.net = nn.Sequential(
-            nn.Conv2d(channels, 16, 3, stride=2),
+            nn.Conv2d(channels, 32, 3, stride=2),
             nn.ReLU(),
-            nn.Conv2d(16, 32, 3, stride=2),
+            nn.Conv2d(32, 256, 3, stride=2),
             nn.ReLU(),
-            nn.Conv2d(32, 64, 3, stride=2),
+            nn.Conv2d(256, 256, 3, stride=2),
             nn.ReLU(),
         )
         self.net2 = nn.Sequential(
-            nn.Linear(64, 64),
+            nn.Linear(256, 256),
             nn.ReLU(),
-            nn.Linear(64, 128),
+            nn.Linear(256, 256),
             nn.ReLU(),
         )
         self.advantage = nn.Sequential(
-            nn.Linear(128, 128), nn.ReLU(), nn.Linear(128, action_count)
+            nn.Linear(256, 256), nn.ReLU(), nn.Linear(256, action_count)
         )
-        self.value = nn.Sequential(nn.Linear(128, 128), nn.ReLU(), nn.Linear(128, 1))
+        self.value = nn.Sequential(nn.Linear(256, 256), nn.ReLU(), nn.Linear(256, 1))
         self.action_count = action_count
         init_orthogonal(self)
 
@@ -113,7 +113,6 @@ if args.eval:
         num_frames=num_frames,
     )
     with torch.no_grad():
-        reward_total = 0.0
         obs_, info = test_env.reset()
         eval_obs = torch.from_numpy(np.array(obs_)).float()
         while True:
@@ -127,11 +126,10 @@ if args.eval:
             action = q_vals.argmax(0).item()
             obs_, reward, eval_done, eval_trunc, _ = test_env.step(action)
             test_env.render()
-            eval_obs = torch.from_numpy(np.array(obs_)).float()
-            reward_total += reward
+            eval_obs = torch.from_numpy(obs_).float()
             if eval_done or eval_trunc:
                 obs_, info = test_env.reset()
-                eval_obs = torch.from_numpy(np.array(obs_)).float()
+                eval_obs = torch.from_numpy(obs_).float()
 
 wandb.init(
     project="smash-rl",
@@ -265,7 +263,7 @@ for step in tqdm(range(iterations), position=0):
 
         wandb.log(
             {
-                "avg_eval_episode_reward": reward_total / eval_steps,
+                # "avg_eval_episode_reward": reward_total / eval_steps,
                 # "avg_eval_episode_predicted_reward": pred_reward_total / eval_steps,
                 "avg_q_loss": total_q_loss / train_iters,
                 "q_lr": q_opt.param_groups[-1]["lr"],

@@ -45,6 +45,7 @@ class MFEnv(gym.Env):
     2. 1 if this is the player, 0 if this is the opponent.
     3. State of the character that belongs to the hbox.
     4. 1 if hbox, 0 if empty space.
+    5. -1 if hurtbox facing left, 1 if hurtbox facing right, 0 for hitboxes.
 
     We manually perform frame stacking.
 
@@ -82,16 +83,16 @@ class MFEnv(gym.Env):
         """
 
         self.game = MicroFighter(False)
-        self.observation_space = gym.spaces.Box(0.0, 1.0, [4, 5, IMG_SIZE, IMG_SIZE])
+        self.observation_space = gym.spaces.Box(-1.0, 1.0, [num_frames, 6, IMG_SIZE, IMG_SIZE])
         self.action_space = gym.spaces.Discrete(9)
         self.render_mode = render_mode
         self.num_frames = num_frames
-        self.dmg_reward_amount = 0.0
+        self.dmg_reward_amount = 1.0
         self.player_frame_stack = [
-            np.zeros([5, IMG_SIZE, IMG_SIZE]) for _ in range(self.num_frames)
+            np.zeros([6, IMG_SIZE, IMG_SIZE]) for _ in range(self.num_frames)
         ]
         self.bot_frame_stack = [
-            np.zeros([5, IMG_SIZE, IMG_SIZE]) for _ in range(self.num_frames)
+            np.zeros([6, IMG_SIZE, IMG_SIZE]) for _ in range(self.num_frames)
         ]
         self.max_skip_frames = max_skip_frames
         self.view_channels = view_channels
@@ -104,8 +105,10 @@ class MFEnv(gym.Env):
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
         skip_frames = random.randrange(0, self.max_skip_frames)
+        dmg_reward = 0.0
         for _ in range(skip_frames + 1):
             step_output = self.game.step(action)
+            dmg_reward += step_output.net_damage
             if step_output.round_over:
                 break
 
@@ -118,9 +121,10 @@ class MFEnv(gym.Env):
         round_reward = 0.0
         if terminated:
             round_reward = 1.0 if step_output.player_won else -1.0
-        dmg_reward = step_output.net_damage / 100
-        reward = dmg_reward * (self.dmg_reward_amount) + round_reward
+        dmg_reward = dmg_reward / 100
 
+        reward = dmg_reward * (self.dmg_reward_amount) + round_reward
+        
         return np.stack(self.player_frame_stack), reward, terminated, False, {}
 
     def reset(
@@ -128,10 +132,10 @@ class MFEnv(gym.Env):
     ) -> tuple[np.ndarray, dict[str, Any]]:
         step_output = self.game.reset()
         self.player_frame_stack = [
-            np.zeros([5, IMG_SIZE, IMG_SIZE]) for _ in range(self.num_frames)
+            np.zeros([6, IMG_SIZE, IMG_SIZE]) for _ in range(self.num_frames)
         ]
         self.bot_frame_stack = [
-            np.zeros([5, IMG_SIZE, IMG_SIZE]) for _ in range(self.num_frames)
+            np.zeros([6, IMG_SIZE, IMG_SIZE]) for _ in range(self.num_frames)
         ]
         channels = self.gen_channels(step_output, is_player=True)
         self.insert_obs(np.stack(channels), self.player_frame_stack)
@@ -152,6 +156,7 @@ class MFEnv(gym.Env):
         player_channel = np.zeros([IMG_SIZE, IMG_SIZE])
         state_channel = np.zeros([IMG_SIZE, IMG_SIZE])
         box_channel = np.zeros([IMG_SIZE, IMG_SIZE])
+        dir_channel = np.zeros([IMG_SIZE, IMG_SIZE])
         for hbox in hboxes:
             box_img = Image.new("1", (IMG_SIZE, IMG_SIZE))
             box_draw = ImageDraw.ImageDraw(box_img)
@@ -193,12 +198,14 @@ class MFEnv(gym.Env):
                 int(hbox.move_state) / 8
             )
             box_channel = box_channel * inv_box_arr + box_arr
+            dir_channel = dir_channel * inv_box_arr + box_arr * hbox.dir
         return [
             hit_channel,
             dmg_channel,
             player_channel,
             state_channel,
             box_channel,
+            dir_channel,
         ]
 
     def insert_obs(self, obs: np.ndarray, frame_stack: list[np.ndarray]):

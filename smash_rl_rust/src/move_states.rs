@@ -17,7 +17,7 @@ const HIT_OFFSET: Vec2 = Vec2 {
     x: CHAR_WIDTH / 2.0,
     y: 0.0,
 };
-const GRAB_RECOVERY: u32 = 10;
+const GRAB_RECOVERY: u32 = 30;
 const GRAB_SIZE: u32 = 4;
 
 /// Plugin for move states.

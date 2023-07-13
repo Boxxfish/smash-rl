@@ -29,6 +29,7 @@ class HBox:
     is_player: bool
     damage: int
     move_state: int
+    dir: int
 
 class StepOutput:
     hboxes: List[HBox]

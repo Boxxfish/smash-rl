@@ -4,7 +4,7 @@ use bevy_save::{AppSaveableExt, SavePlugins, WorldSaveableExt};
 use pyo3::prelude::*;
 
 use crate::{
-    character::{Bot, CharAttrs, CharInput, Character, Player},
+    character::{Bot, CharAttrs, CharInput, Character, Player, HorizontalDir},
     hit::{Hit, Hitstun, Projectile},
     micro_fighter::AppState,
     move_states::{CurrentMoveState, MoveState},
@@ -86,6 +86,11 @@ pub struct HBox {
     /// State the character currently is in.
     #[pyo3(get)]
     pub move_state: MoveState,
+    /// Direction of the box.
+    /// Only applicable for hurtboxes.
+    /// -1 for left, 1 for right, 0 otherwise.
+    #[pyo3(get)]
+    pub dir: i32,
 }
 
 /// Resource that stores all HBoxes.
@@ -133,6 +138,10 @@ fn collect_hboxes(
         let is_player = player.is_some();
         let damage = character.damage;
         let move_state = curr_move_state.move_state;
+        let dir = match &character.dir {
+            HorizontalDir::Left => -1,
+            HorizontalDir::Right => 1,
+        };
         if is_player {
             player_state = Some(move_state);
         } else {
@@ -148,6 +157,7 @@ fn collect_hboxes(
             is_player,
             damage,
             move_state,
+            dir,
         };
         hbox_coll.hboxes.push(hbox);
     }
@@ -173,6 +183,7 @@ fn collect_hboxes(
             is_player,
             damage: hit.damage,
             move_state,
+            dir: 0,
         };
         hbox_coll.hboxes.push(hbox);
     }
@@ -188,7 +199,7 @@ fn update_net_dmg(
     let bot = bot_query.single();
     let delta_player_dmg = player.damage as i32 - net_dmg.last_player_damage as i32;
     let delta_opp_dmg = bot.damage as i32 - net_dmg.last_opp_damage as i32;
-    net_dmg.net_dmg = delta_player_dmg - delta_opp_dmg;
+    net_dmg.net_dmg = delta_opp_dmg - delta_player_dmg;
     net_dmg.last_player_damage = player.damage;
     net_dmg.last_opp_damage = bot.damage;
 }
