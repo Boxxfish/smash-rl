@@ -91,7 +91,7 @@ impl Default for CharBundle {
             sensor: Sensor,
             state_timer: StateTimer { frames: 0 },
             curr_move_state: CurrentMoveState {
-                move_state: MoveState::Idle,
+                move_state: MoveState::Fall,
             },
         }
     }

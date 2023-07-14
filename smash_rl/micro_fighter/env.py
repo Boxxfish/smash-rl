@@ -77,7 +77,7 @@ class MFEnv(gym.Env):
             rendered as R, G, and B. See class description for channels.
         
         max_skip_frames: Maximum number of frames that will be skipped. When 0, no \
-            frames are skipped. The actual number of frames skipped is random.
+            frames are skipped. Right now, this is deterministic.
         
         num_frames: Number of frames in framestack.
         """
@@ -104,7 +104,7 @@ class MFEnv(gym.Env):
             self.clock = pygame.time.Clock()
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
-        skip_frames = random.randrange(0, self.max_skip_frames)
+        skip_frames = self.max_skip_frames
         dmg_reward = 0.0
         for _ in range(skip_frames + 1):
             step_output = self.game.step(action)
@@ -113,15 +113,15 @@ class MFEnv(gym.Env):
                 break
 
         channels = self.gen_channels(step_output, is_player=True)
-        self.insert_obs(np.stack(channels), self.player_frame_stack)
+        self.player_frame_stack = self.insert_obs(np.stack(channels), self.player_frame_stack)
         bot_channels = self.gen_channels(step_output, is_player=False)
-        self.insert_obs(np.stack(bot_channels), self.bot_frame_stack)
+        self.bot_frame_stack = self.insert_obs(np.stack(bot_channels), self.bot_frame_stack)
 
         terminated = step_output.round_over
         round_reward = 0.0
         if terminated:
             round_reward = 1.0 if step_output.player_won else -1.0
-        dmg_reward = dmg_reward / 100
+        dmg_reward = dmg_reward / 10
 
         reward = dmg_reward * (self.dmg_reward_amount) + round_reward
         
@@ -138,9 +138,9 @@ class MFEnv(gym.Env):
             np.zeros([6, IMG_SIZE, IMG_SIZE]) for _ in range(self.num_frames)
         ]
         channels = self.gen_channels(step_output, is_player=True)
-        self.insert_obs(np.stack(channels), self.player_frame_stack)
+        self.player_frame_stack = self.insert_obs(np.stack(channels), self.player_frame_stack)
         bot_channels = self.gen_channels(step_output, is_player=False)
-        self.insert_obs(np.stack(bot_channels), self.bot_frame_stack)
+        self.bot_frame_stack = self.insert_obs(np.stack(bot_channels), self.bot_frame_stack)
         return np.stack(self.player_frame_stack), {}
 
     def gen_channels(
@@ -208,7 +208,7 @@ class MFEnv(gym.Env):
             dir_channel,
         ]
 
-    def insert_obs(self, obs: np.ndarray, frame_stack: list[np.ndarray]):
+    def insert_obs(self, obs: np.ndarray, frame_stack: list[np.ndarray]) -> list[np.ndarray]:
         """
         Inserts a new frame and cycles the observation.
         Sets frame "n" to the current value of frame "n - 1", from 1 to `self.num_frames`.
@@ -216,6 +216,7 @@ class MFEnv(gym.Env):
         for i in reversed(range(1, self.num_frames)):
             frame_stack[i] = frame_stack[i - 1]
         frame_stack[0] = obs
+        return frame_stack
 
     def render(self):
         if self.render_mode == "human":

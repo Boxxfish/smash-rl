@@ -62,6 +62,7 @@ impl Plugin for MoveStatesPlugin {
                 handle_grab_end,
                 handle_hitstun,
                 update_timer,
+                handle_move_state_change,
             )
                 .in_set(OnUpdate(AppState::Running)),
         )
@@ -108,6 +109,7 @@ impl Plugin for MoveStatesPlugin {
         .add_plugin(MoveStatePlugin::<GrabState, { MoveState::Grab as u32 }>::default())
         .add_plugin(MoveStatePlugin::<ShieldState, { MoveState::Shield as u32 }>::default())
         .add_plugin(MoveStatePlugin::<HitstunState, { MoveState::Hitstun as u32 }>::default())
+        .add_event::<ChangeMoveStateEvent>()
         // Serialization stuff
         .register_type::<MoveState>()
         .register_saveable::<CurrentMoveState>()
@@ -218,6 +220,68 @@ pub struct SpecialAttackRecoveryState;
 #[reflect(Component)]
 pub struct GrabState;
 
+/// Sent when the state should be changed.
+pub struct ChangeMoveStateEvent {
+    pub move_state: MoveState,
+    pub target: Entity,
+}
+
+/// Handles move state being changed.
+fn handle_move_state_change(
+    mut ev_change_move_state: EventReader<ChangeMoveStateEvent>,
+    mut char_query: Query<(&mut CurrentMoveState, &mut StateTimer)>,
+    mut commands: Commands,
+) {
+    for ev in ev_change_move_state.iter() {
+        let (mut curr_move_state, mut timer) = char_query.get_mut(ev.target).unwrap();
+
+        // Remove old state
+        let mut e_cmds = commands.get_entity(ev.target).unwrap();
+        match curr_move_state.move_state {
+            MoveState::Idle => e_cmds.remove::<IdleState>(),
+            MoveState::Run => e_cmds.remove::<RunState>(),
+            MoveState::Jump => e_cmds.remove::<JumpState>(),
+            MoveState::Fall => e_cmds.remove::<FallState>(),
+            MoveState::Shield => e_cmds.remove::<ShieldState>(),
+            MoveState::Hitstun => e_cmds.remove::<HitstunState>(),
+            MoveState::LightAttackStartup => e_cmds.remove::<LightAttackStartupState>(),
+            MoveState::LightAttackHit => e_cmds.remove::<LightAttackHitState>(),
+            MoveState::LightAttackRecovery => e_cmds.remove::<LightAttackRecoveryState>(),
+            MoveState::HeavyAttackStartup => e_cmds.remove::<HeavyAttackStartupState>(),
+            MoveState::HeavyAttackHit => e_cmds.remove::<HeavyAttackHitState>(),
+            MoveState::HeavyAttackRecovery => e_cmds.remove::<HeavyAttackRecoveryState>(),
+            MoveState::SpecialAttackStartup => e_cmds.remove::<SpecialAttackStartupState>(),
+            MoveState::SpecialAttackHit => e_cmds.remove::<SpecialAttackHitState>(),
+            MoveState::SpecialAttackRecovery => e_cmds.remove::<SpecialAttackRecoveryState>(),
+            MoveState::Grab => e_cmds.remove::<GrabState>(),
+        };
+
+        // Add new state
+        match ev.move_state {
+            MoveState::Idle => e_cmds.insert(IdleState),
+            MoveState::Run => e_cmds.insert(RunState),
+            MoveState::Jump => e_cmds.insert(JumpState),
+            MoveState::Fall => e_cmds.insert(FallState),
+            MoveState::Shield => e_cmds.insert(ShieldState),
+            MoveState::Hitstun => e_cmds.insert(HitstunState),
+            MoveState::LightAttackStartup => e_cmds.insert(LightAttackStartupState),
+            MoveState::LightAttackHit => e_cmds.insert(LightAttackHitState),
+            MoveState::LightAttackRecovery => e_cmds.insert(LightAttackRecoveryState),
+            MoveState::HeavyAttackStartup => e_cmds.insert(HeavyAttackStartupState),
+            MoveState::HeavyAttackHit => e_cmds.insert(HeavyAttackHitState),
+            MoveState::HeavyAttackRecovery => e_cmds.insert(HeavyAttackRecoveryState),
+            MoveState::SpecialAttackStartup => e_cmds.insert(SpecialAttackStartupState),
+            MoveState::SpecialAttackHit => e_cmds.insert(SpecialAttackHitState),
+            MoveState::SpecialAttackRecovery => e_cmds.insert(SpecialAttackRecoveryState),
+            MoveState::Grab => e_cmds.insert(GrabState),
+        };
+        curr_move_state.move_state = ev.move_state;
+
+        // Reset state timer
+        timer.frames = 0;
+    }
+}
+
 /// Holds the current frame since this state started.
 #[derive(Component, Default, Reflect)]
 #[reflect(Component)]
@@ -242,30 +306,11 @@ impl<T: Component + Reflect + bevy::reflect::GetTypeRegistration, const U: u32> 
     for MoveStatePlugin<T, U>
 {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            (reset_state_timer::<T>, update_move_state::<T, U>).in_set(OnUpdate(AppState::Running)),
-        )
-        .register_saveable::<T>();
+        app.register_saveable::<T>();
         // TODO: Just add manual system for hitstun instead of adding edge case?
         if U != MoveState::Hitstun as u32 {
             app.add_system(exit_on_hitstun::<T>.in_set(OnUpdate(AppState::Running)));
         }
-    }
-}
-
-/// Resets the state timer whenever the component is added.
-fn reset_state_timer<T: Component>(mut timer_query: Query<&mut StateTimer, Added<T>>) {
-    for mut timer in timer_query.iter_mut() {
-        timer.frames = 0;
-    }
-}
-
-/// Updates the current state whenever the component is added.
-fn update_move_state<T: Component, const U: u32>(
-    mut ms_query: Query<&mut CurrentMoveState, Added<T>>,
-) {
-    for mut curr_move_state in ms_query.iter_mut() {
-        curr_move_state.move_state = MoveState::from(U);
     }
 }
 
@@ -290,35 +335,52 @@ fn update_timer(mut timer_query: Query<&mut StateTimer>) {
 fn handle_idle(
     mut char_query: Query<(Entity, &CharInput, &mut Character), With<IdleState>>,
     mut commands: Commands,
+    mut ev_change_move_state: EventWriter<ChangeMoveStateEvent>,
 ) {
     for (e, char_inpt, mut character) in char_query.iter_mut() {
         if char_inpt.jump {
-            commands.entity(e).insert((JumpState, GravityScale(0.0))).remove::<IdleState>();
+            commands.entity(e).insert((GravityScale(0.0)));
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::Jump,
+                target: e,
+            });
         } else if char_inpt.left {
             character.dir = HorizontalDir::Left;
-            commands.entity(e).insert(RunState).remove::<IdleState>();
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::Run,
+                target: e,
+            });
         } else if char_inpt.right {
             character.dir = HorizontalDir::Right;
-            commands.entity(e).insert(RunState).remove::<IdleState>();
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::Run,
+                target: e,
+            });
         } else if char_inpt.light {
-            commands
-                .entity(e)
-                .insert(LightAttackStartupState)
-                .remove::<IdleState>();
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::LightAttackStartup,
+                target: e,
+            });
         } else if char_inpt.heavy {
-            commands
-                .entity(e)
-                .insert(HeavyAttackStartupState)
-                .remove::<IdleState>();
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::HeavyAttackStartup,
+                target: e,
+            });
         } else if char_inpt.special {
-            commands
-                .entity(e)
-                .insert(SpecialAttackStartupState)
-                .remove::<IdleState>();
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::SpecialAttackStartup,
+                target: e,
+            });
         } else if char_inpt.shield {
-            commands.entity(e).insert(ShieldState).remove::<IdleState>();
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::Shield,
+                target: e,
+            });
         } else if char_inpt.grab {
-            commands.entity(e).insert(GrabState).remove::<IdleState>();
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::Grab,
+                target: e,
+            });
         }
     }
 }
@@ -328,6 +390,7 @@ fn handle_run(
         (Entity, &CharInput, &CharAttrs, &mut Velocity, &Character),
         With<RunState>,
     >,
+    mut ev_change_move_state: EventWriter<ChangeMoveStateEvent>,
     mut commands: Commands,
 ) {
     for (e, char_inpt, char_attrs, mut vel, character) in char_query.iter_mut() {
@@ -338,10 +401,11 @@ fn handle_run(
         };
         vel.linvel = Vec2::new(char_attrs.run_speed as f32 * dir_mult, 0.0);
         if char_inpt.jump {
-            commands
-                .entity(e)
-                .insert((JumpState, GravityScale(0.0)))
-                .remove::<RunState>();
+            commands.entity(e).insert((GravityScale(0.0)));
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::Jump,
+                target: e,
+            });
             if char_inpt.left {
                 vel.linvel.x = -(char_attrs.run_speed as f32) / 2.0;
             } else if char_inpt.right {
@@ -351,13 +415,16 @@ fn handle_run(
             || (!char_inpt.right && character.dir == HorizontalDir::Right)
         {
             vel.linvel = Vec2::new(0.0, 0.0);
-            commands.entity(e).insert(IdleState).remove::<RunState>();
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::Idle,
+                target: e,
+            });
         } else if char_inpt.heavy {
             vel.linvel = Vec2::new(0.0, 0.0);
-            commands
-                .entity(e)
-                .insert(HeavyAttackStartupState)
-                .remove::<RunState>();
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::HeavyAttackStartup,
+                target: e,
+            });
         }
     }
 }
@@ -367,16 +434,18 @@ fn handle_jump(
         (Entity, &CharInput, &CharAttrs, &mut Velocity, &StateTimer),
         With<JumpState>,
     >,
+    mut ev_change_move_state: EventWriter<ChangeMoveStateEvent>,
     mut commands: Commands,
 ) {
     for (e, char_inpt, char_attrs, mut vel, timer) in char_query.iter_mut() {
         vel.linvel.y = JUMP_VEL;
         if timer.frames >= ((char_attrs.jump_height as f32 / JUMP_VEL) / FIXED_TIMESTEP) as u32 {
             vel.linvel.y = 0.0;
-            commands
-                .entity(e)
-                .insert((FallState, GravityScale(10.0)))
-                .remove::<JumpState>();
+            commands.entity(e).insert((GravityScale(10.0)));
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::Fall,
+                target: e,
+            });
         }
         if char_inpt.left {
             vel.linvel.x += -AIR_VEL;
@@ -388,12 +457,16 @@ fn handle_jump(
 
 fn handle_fall(
     mut char_query: Query<(Entity, &CharInput, &mut Velocity, &Character), With<FallState>>,
+    mut ev_change_move_state: EventWriter<ChangeMoveStateEvent>,
     mut commands: Commands,
 ) {
     // Go to idle if touching floor
     for (e, _, _, character) in char_query.iter() {
         if character.on_floor {
-            commands.entity(e).insert(IdleState).remove::<FallState>();
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::Idle,
+                target: e,
+            });
         }
     }
 
@@ -409,14 +482,15 @@ fn handle_fall(
 
 fn handle_light_attack_startup(
     char_query: Query<(Entity, &CharAttrs, &StateTimer), With<LightAttackStartupState>>,
+    mut ev_change_move_state: EventWriter<ChangeMoveStateEvent>,
     mut commands: Commands,
 ) {
     for (e, char_attrs, timer) in char_query.iter() {
         if timer.frames >= char_attrs.light_startup {
-            commands
-                .entity(e)
-                .insert(LightAttackHitState)
-                .remove::<LightAttackStartupState>();
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::LightAttackHit,
+                target: e,
+            });
         }
     }
 }
@@ -444,14 +518,15 @@ fn handle_light_attack_hit_start(
 
 fn handle_light_attack_hit(
     char_query: Query<(Entity, &StateTimer), With<LightAttackHitState>>,
+    mut ev_change_move_state: EventWriter<ChangeMoveStateEvent>,
     mut commands: Commands,
 ) {
     for (e, timer) in char_query.iter() {
         if timer.frames >= 4 {
-            commands
-                .entity(e)
-                .insert(LightAttackRecoveryState)
-                .remove::<LightAttackHitState>();
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::LightAttackRecovery,
+                target: e,
+            });
         }
     }
 }
@@ -472,28 +547,30 @@ fn handle_light_attack_hit_end(
 
 fn handle_light_attack_recovery(
     char_query: Query<(Entity, &CharAttrs, &StateTimer), With<LightAttackRecoveryState>>,
+    mut ev_change_move_state: EventWriter<ChangeMoveStateEvent>,
     mut commands: Commands,
 ) {
     for (e, char_attrs, timer) in char_query.iter() {
         if timer.frames >= char_attrs.light_recovery {
-            commands
-                .entity(e)
-                .insert(IdleState)
-                .remove::<LightAttackRecoveryState>();
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::Idle,
+                target: e,
+            });
         }
     }
 }
 
 fn handle_heavy_attack_startup(
     char_query: Query<(Entity, &CharAttrs, &StateTimer), With<HeavyAttackStartupState>>,
+    mut ev_change_move_state: EventWriter<ChangeMoveStateEvent>,
     mut commands: Commands,
 ) {
     for (e, char_attrs, timer) in char_query.iter() {
         if timer.frames >= char_attrs.heavy_startup {
-            commands
-                .entity(e)
-                .insert(HeavyAttackHitState)
-                .remove::<HeavyAttackStartupState>();
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::HeavyAttackHit,
+                target: e,
+            });
         }
     }
 }
@@ -521,14 +598,15 @@ fn handle_heavy_attack_hit_start(
 
 fn handle_heavy_attack_hit(
     char_query: Query<(Entity, &StateTimer), With<HeavyAttackHitState>>,
+    mut ev_change_move_state: EventWriter<ChangeMoveStateEvent>,
     mut commands: Commands,
 ) {
     for (e, timer) in char_query.iter() {
-        if timer.frames >= 4 {
-            commands
-                .entity(e)
-                .insert(HeavyAttackRecoveryState)
-                .remove::<HeavyAttackHitState>();
+        if timer.frames >= 10 {
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::HeavyAttackRecovery,
+                target: e,
+            });
         }
     }
 }
@@ -549,14 +627,15 @@ fn handle_heavy_attack_hit_end(
 
 fn handle_heavy_attack_recovery(
     char_query: Query<(Entity, &CharAttrs, &StateTimer), With<HeavyAttackRecoveryState>>,
+    mut ev_change_move_state: EventWriter<ChangeMoveStateEvent>,
     mut commands: Commands,
 ) {
     for (e, char_attrs, timer) in char_query.iter() {
         if timer.frames >= char_attrs.heavy_recovery {
-            commands
-                .entity(e)
-                .insert(IdleState)
-                .remove::<HeavyAttackRecoveryState>();
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::Idle,
+                target: e,
+            });
         }
     }
 }
@@ -569,11 +648,15 @@ fn handle_shield_start(mut char_query: Query<&mut Character, Added<ShieldState>>
 
 fn handle_shield(
     char_query: Query<(Entity, &CharInput), With<ShieldState>>,
+    mut ev_change_move_state: EventWriter<ChangeMoveStateEvent>,
     mut commands: Commands,
 ) {
     for (e, char_inpt) in char_query.iter() {
         if !char_inpt.shield {
-            commands.entity(e).insert(IdleState).remove::<ShieldState>();
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::Idle,
+                target: e,
+            });
         }
     }
 }
@@ -591,20 +674,22 @@ fn handle_shield_end(
 
 fn handle_special_attack_startup(
     char_query: Query<(Entity, &CharAttrs, &StateTimer), With<SpecialAttackStartupState>>,
+    mut ev_change_move_state: EventWriter<ChangeMoveStateEvent>,
     mut commands: Commands,
 ) {
     for (e, char_attrs, timer) in char_query.iter() {
         if timer.frames >= char_attrs.projectile_startup {
-            commands
-                .entity(e)
-                .insert(SpecialAttackHitState)
-                .remove::<SpecialAttackStartupState>();
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::SpecialAttackHit,
+                target: e,
+            });
         }
     }
 }
 
 fn handle_special_attack_hit(
     char_query: Query<(Entity, &CharAttrs, &Character, &Transform), With<SpecialAttackHitState>>,
+    mut ev_change_move_state: EventWriter<ChangeMoveStateEvent>,
     mut commands: Commands,
 ) {
     for (e, char_attrs, character, transform) in char_query.iter() {
@@ -628,29 +713,31 @@ fn handle_special_attack_hit(
             hit_bundle,
         ));
 
-        commands
-            .entity(e)
-            .insert(SpecialAttackRecoveryState)
-            .remove::<SpecialAttackHitState>();
+        ev_change_move_state.send(ChangeMoveStateEvent {
+            move_state: MoveState::SpecialAttackRecovery,
+            target: e,
+        });
     }
 }
 
 fn handle_special_attack_recovery(
     char_query: Query<(Entity, &CharAttrs, &StateTimer), With<SpecialAttackRecoveryState>>,
+    mut ev_change_move_state: EventWriter<ChangeMoveStateEvent>,
     mut commands: Commands,
 ) {
     for (e, char_attrs, timer) in char_query.iter() {
         if timer.frames >= char_attrs.heavy_recovery {
-            commands
-                .entity(e)
-                .insert(IdleState)
-                .remove::<SpecialAttackRecoveryState>();
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::Idle,
+                target: e,
+            });
         }
     }
 }
 
 fn handle_grab_start(
     char_query: Query<(Entity, &CharAttrs, &Character), Added<GrabState>>,
+    mut ev_change_move_state: EventWriter<ChangeMoveStateEvent>,
     mut commands: Commands,
 ) {
     for (e, char_attrs, character) in char_query.iter() {
@@ -670,10 +757,14 @@ fn handle_grab_start(
     }
 }
 
-fn handle_grab(char_query: Query<(Entity, &StateTimer), With<GrabState>>, mut commands: Commands) {
+fn handle_grab(char_query: Query<(Entity, &StateTimer), With<GrabState>>, 
+mut ev_change_move_state: EventWriter<ChangeMoveStateEvent>,mut commands: Commands) {
     for (e, timer) in char_query.iter() {
         if timer.frames >= GRAB_RECOVERY {
-            commands.entity(e).insert(IdleState).remove::<GrabState>();
+            ev_change_move_state.send(ChangeMoveStateEvent {
+                move_state: MoveState::Idle,
+                target: e,
+            });
         }
     }
 }
@@ -694,6 +785,7 @@ fn handle_grab_end(
 
 fn handle_hitstun(
     char_query: Query<(Entity, &Character, &Hitstun, &StateTimer), With<HitstunState>>,
+    mut ev_change_move_state: EventWriter<ChangeMoveStateEvent>,
     mut commands: Commands,
 ) {
     for (e, character, hitstun, timer) in char_query.iter() {
@@ -701,15 +793,21 @@ fn handle_hitstun(
             if character.on_floor {
                 commands
                     .entity(e)
-                    .insert((IdleState, GravityScale(10.0)))
-                    .remove::<HitstunState>()
+                    .insert((GravityScale(10.0)))
                     .remove::<Hitstun>();
+                ev_change_move_state.send(ChangeMoveStateEvent {
+                    move_state: MoveState::Idle,
+                    target: e,
+                });
             } else {
                 commands
                     .entity(e)
-                    .insert((FallState, GravityScale(10.0)))
-                    .remove::<HitstunState>()
+                    .insert((GravityScale(10.0)))
                     .remove::<Hitstun>();
+                ev_change_move_state.send(ChangeMoveStateEvent {
+                    move_state: MoveState::Fall,
+                    target: e,
+                });
             }
         }
     }

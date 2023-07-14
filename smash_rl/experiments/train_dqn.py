@@ -3,13 +3,12 @@ Trains an agent with a DQN.
 """
 import copy
 import random
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np  # type: ignore
 import torch
 import torch.nn as nn
 import wandb
-from gymnasium.vector import SyncVectorEnv
 from gymnasium.wrappers.time_limit import TimeLimit
 import gymnasium as gym
 from tqdm import tqdm
@@ -25,23 +24,26 @@ _: Any
 INF = 10**8
 
 # Hyperparameters
-train_steps = 64  # Number of steps to step through during sampling.
-iterations = 80000  # Number of sample/train iterations.
-train_iters = 8  # Number of passes over the samples collected.
-train_batch_size = 64  # Minibatch size while training models.
+train_steps = 256  # Number of steps to step through during sampling.
+iterations = 10000  # Number of sample/train iterations.
+train_iters = 16  # Number of passes over the samples collected.
+train_batch_size = 128  # Minibatch size while training models.
 discount = 0.99  # Discount factor applied to rewards.
-q_epsilon = 0.5  # Epsilon for epsilon greedy strategy. This gets annealed over time.
-eval_steps = 1  # Number of eval runs to average over.
-max_eval_steps = 100  # Max number of steps to take during each eval run.
-q_lr = 0.0001  # Learning rate of the q net.
+q_epsilon = 0.9  # Epsilon for epsilon greedy strategy. This gets annealed over time.
+eval_steps = 3  # Number of eval runs to average over.
+max_eval_steps = 500  # Max number of steps to take during each eval run.
+q_lr = 0.0003  # Learning rate of the q net.
 warmup_steps = 500  # For the first n number of steps, we will only sample randomly.
 buffer_size = 10000  # Number of elements that can be stored in the buffer.
 target_update = 100  # Number of iterations before updating Q target.
 num_frames = 4  # Number of frames in frame stack.
-max_skip_frames = 2  # Max number of frames to skip.
+max_skip_frames = 1  # Max number of frames to skip.
 time_limit = 500  # Time limit before truncation.
 bot_update = 500  # Number of iterations before caching the current policy.
-max_bots = 6 # Maximum number of bots to store.
+max_bots = 6  # Maximum number of bots to store.
+start_elo = 1200  # Starting ELO score for each agent.
+elo_k = 16  # ELO adjustment constant.
+eval_every = 100  # Number of iterations before evaluating.
 device = torch.device("cuda")
 
 
@@ -89,7 +91,6 @@ class QNet(nn.Module):
         advantage = self.advantage(x)
         value = self.value(x)
         return value + advantage - advantage.mean(1, keepdim=True)
-
 
 env = TimeLimit(
     MFEnv(max_skip_frames=max_skip_frames, num_frames=num_frames),
@@ -157,14 +158,18 @@ assert isinstance(obs_space, gym.spaces.Box)
 assert isinstance(act_space, gym.spaces.Discrete)
 assert isinstance(env.env, MFEnv)
 q_net = QNet(torch.Size(obs_space.shape), int(act_space.n))
+if args.resume:
+    q_net.load_state_dict(torch.load("temp/q_net.pt"))
 q_net_target = copy.deepcopy(q_net)
 q_net_target.to(device)
 q_opt = torch.optim.Adam(q_net.parameters(), lr=q_lr)
 
 # Bot Q networks
-bot_q_nets = [q_net.state_dict()]
+bot_data = [{"state_dict": q_net.state_dict(), "elo": start_elo}]
 bot_q_net = copy.deepcopy(q_net)
 bot_q_index = 0
+bot_is_random = True
+current_elo = start_elo
 
 # A replay buffer stores experience collected over all sampling runs
 buffer = ReplayBuffer(
@@ -177,22 +182,32 @@ obs = torch.Tensor(env.reset()[0]).float().unsqueeze(0)
 for step in tqdm(range(iterations), position=0):
     percent_done = step / iterations
     q_epsilon_real = q_epsilon * max(1.0 - percent_done, 0.05)
-    env.env.set_dmg_reward_amount(1.0 - percent_done)
+    # env.env.set_dmg_reward_amount(1.0 - percent_done)
 
     # Collect experience
     with torch.no_grad():
         for _ in range(train_steps):
-            bot_q_vals = bot_q_net(
-                torch.from_numpy(env.bot_obs()).float().unsqueeze(0)
-            ).squeeze()
-            bot_action = bot_q_vals.argmax(0).item()
+            # Choose bot action
+            if bot_is_random:
+                bot_action = random.randrange(0, int(act_space.n))
+            else:
+                bot_q_vals = bot_q_net(
+                    torch.from_numpy(env.bot_obs()).float().unsqueeze(0)
+                ).squeeze()
+                bot_action = bot_q_vals.argmax(0).item()
             env.bot_step(bot_action)
 
-            if random.random() < q_epsilon_real or step < warmup_steps:
+            # Choose player action
+            if (
+                random.random() < q_epsilon_real
+                or step < warmup_steps
+                or not buffer.filled
+            ):
                 action = random.randrange(0, int(act_space.n))
             else:
                 q_vals = q_net(obs)
                 action = q_vals.argmax(1).item()
+
             try:
                 obs_, rewards, dones, truncs, _ = env.step(action)
                 next_obs = torch.from_numpy(obs_).float().unsqueeze(0)
@@ -210,7 +225,15 @@ for step in tqdm(range(iterations), position=0):
                 if dones or truncs:
                     obs = torch.Tensor(env.reset()[0]).float().unsqueeze(0)
                     # Change opponent
-                    bot_q_net.load_state_dict(random.choice(bot_q_nets))
+                    if random.random() < 0.1:
+                        bot_is_random = True
+                    else:
+                        bot_is_random = False
+                        state_dict = random.choice(bot_data)["state_dict"]
+                        assert isinstance(state_dict, Mapping)
+                        bot_q_net.load_state_dict(state_dict)
+            except KeyboardInterrupt:
+                quit()
             except:
                 obs = torch.Tensor(env.reset()[0]).float().unsqueeze(0)
 
@@ -227,44 +250,72 @@ for step in tqdm(range(iterations), position=0):
             discount,
         )
 
-        # Evaluate the network's performance after this training iteration.
-        # eval_done = False
-        # with torch.no_grad():
-        #     reward_total = 0.0
-        #     pred_reward_total = 0
-        #     obs_, info = test_env.reset()
-        #     eval_obs = torch.from_numpy(np.array(obs_)).float()
-        #     for _ in range(eval_steps):
-        #         try:
-        #             steps_taken = 0
-        #             score = 0
-        #             for _ in range(max_eval_steps):
-        #                 bot_q_vals = bot_q_net(
-        #                     torch.from_numpy(test_env.bot_obs()).float().unsqueeze(0)
-        #                 ).squeeze()
-        #                 bot_action = bot_q_vals.argmax(0).item()
-        #                 test_env.bot_step(bot_action)
+        # Evaluate the network's performance.
+        if (step + 1) % eval_every == 0:
+            eval_done = False
+            with torch.no_grad():
+                obs_, info = test_env.reset()
+                eval_obs = torch.from_numpy(np.array(obs_)).float()
+                eval_bot_q_net = QNet(torch.Size(obs_space.shape), int(act_space.n))
+                for _ in range(eval_steps):
+                    i = random.randrange(0, len(bot_data))
+                    state_dict = bot_data[i]["state_dict"]
+                    assert isinstance(state_dict, Mapping)
+                    eval_bot_q_net.load_state_dict(state_dict)
+                    b_elo = bot_data[i]["elo"]
+                    assert isinstance(b_elo, int)
+                    try:
+                        for _ in range(max_eval_steps):
+                            bot_q_vals = eval_bot_q_net(
+                                torch.from_numpy(test_env.bot_obs())
+                                .float()
+                                .unsqueeze(0)
+                            ).squeeze()
+                            bot_action = bot_q_vals.argmax(0).item()
+                            test_env.bot_step(bot_action)
 
-        #                 q_vals = q_net(eval_obs.unsqueeze(0)).squeeze()
-        #                 action = q_vals.argmax(0).item()
-        #                 pred_reward_total += (
-        #                     q_net(eval_obs.unsqueeze(0)).squeeze().max(0).values.item()
-        #                 )
-        #                 obs_, reward, eval_done, eval_trunc, _ = test_env.step(action)
-        #                 eval_obs = torch.from_numpy(np.array(obs_)).float()
-        #                 steps_taken += 1
-        #                 reward_total += reward
-        #                 if eval_done or eval_trunc:
-        #                     obs_, info = test_env.reset()
-        #                     eval_obs = torch.from_numpy(np.array(obs_)).float()
-        #                     break
-        #         except:
-        #             pass
+                            q_vals = q_net(eval_obs.unsqueeze(0)).squeeze()
+                            action = q_vals.argmax(0).item()
+                            obs_, reward, eval_done, eval_trunc, _ = test_env.step(
+                                action
+                            )
+                            eval_obs = torch.from_numpy(np.array(obs_)).float()
+                            if eval_done or eval_trunc:
+                                if reward > 0.5:
+                                    # Current network won
+                                    a = 1.0
+                                    b = 0.0
+                                elif reward < -0.5:
+                                    # Opponent won
+                                    b = 1.0
+                                    a = 0.0
+                                else:
+                                    # They tied
+                                    a = 0.5
+                                    b = 0.5
+                                ea = 1.0 / (
+                                    1.0 + 10.0 ** ((b_elo - current_elo) / 400.0)
+                                )
+                                eb = 1.0 / (
+                                    1.0 + 10.0 ** ((current_elo - b_elo) / 400.0)
+                                )
+                                current_elo = current_elo + elo_k * (a - ea)
+                                bot_data[i]["elo"] = int(b_elo + elo_k * (a - ea))
+                                obs_, info = test_env.reset()
+                                eval_obs = torch.from_numpy(np.array(obs_)).float()
+                                break
+                    except KeyboardInterrupt:
+                        quit()
+                    except:
+                        pass
+            wandb.log(
+                {
+                    "current_elo": current_elo,
+                },
+            )
 
         wandb.log(
             {
-                # "avg_eval_episode_reward": reward_total / eval_steps,
-                # "avg_eval_episode_predicted_reward": pred_reward_total / eval_steps,
                 "avg_q_loss": total_q_loss / train_iters,
                 "q_lr": q_opt.param_groups[-1]["lr"],
                 "epsilon": q_epsilon_real,
@@ -277,11 +328,16 @@ for step in tqdm(range(iterations), position=0):
 
         # Update bot Q nets
         if (step + 1) % bot_update == 0:
-            if len(bot_q_nets) < max_bots:
-                bot_q_nets.append(q_net.state_dict())
+            if len(bot_data) < max_bots:
+                bot_data.append(
+                    {"state_dict": q_net.state_dict(), "elo": int(current_elo)}
+                )
             else:
                 bot_q_index = (bot_q_index + 1) % max_bots
-                bot_q_nets[bot_q_index] = q_net.state_dict()
+                bot_data[bot_q_index] = {
+                    "state_dict": q_net.state_dict(),
+                    "elo": int(current_elo),
+                }
 
         # Save
         if (step + 1) % 10 == 0:
