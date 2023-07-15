@@ -71,6 +71,18 @@ pub struct StepOutput {
     /// inflicted on the player.
     #[pyo3(get)]
     pub net_damage: i32,
+    /// Samage the player is at.
+    #[pyo3(get)]
+    pub player_damage: u32,
+    /// State of the player.
+    #[pyo3(get)]
+    pub player_state: MoveState,
+    /// Damage the opponent is at.
+    #[pyo3(get)]
+    pub opponent_damage: u32,
+    /// State of the opponent.
+    #[pyo3(get)]
+    pub opponent_state: MoveState,
 }
 
 /// Simple fighting game.
@@ -160,8 +172,8 @@ impl MicroFighter {
     }
 
     /// Returns the current state.
-    pub fn get_state(&self) -> StepOutput {
-        let world = &self.app.world;
+    pub fn get_state(&mut self) -> StepOutput {
+        let world = &mut self.app.world;
 
         let events = world.get_resource::<Events<RoundOverEvent>>().unwrap();
         let mut ev_round_over = events.get_reader();
@@ -172,6 +184,18 @@ impl MicroFighter {
             (false, false)
         };
 
+        let (p_char, p_state) = world
+            .query_filtered::<(&Character, &CurrentMoveState), With<Player>>()
+            .single(world);
+        let player_damage = p_char.damage;
+        let player_state = p_state.move_state;
+
+        let (b_char, b_state) = world
+            .query_filtered::<(&Character, &CurrentMoveState), With<Bot>>()
+            .single(world);
+        let opponent_damage = b_char.damage;
+        let opponent_state = b_state.move_state;
+
         let hbox_coll = world.get_resource::<HBoxCollection>().unwrap();
         let net_dmg = world.get_resource::<NetDamage>().unwrap();
         StepOutput {
@@ -179,6 +203,10 @@ impl MicroFighter {
             round_over,
             player_won,
             net_damage: net_dmg.net_dmg,
+            player_damage,
+            player_state,
+            opponent_damage,
+            opponent_state,
         }
     }
 
@@ -325,10 +353,12 @@ fn handle_reset(
     }
 }
 
-
 /// Resets the game on game over.
 /// Only used on the human version.
-fn reset_on_gameover(mut ev_reset: EventWriter<ResetEvent>, mut ev_round_over: EventReader<RoundOverEvent>) {
+fn reset_on_gameover(
+    mut ev_reset: EventWriter<ResetEvent>,
+    mut ev_round_over: EventReader<RoundOverEvent>,
+) {
     for _ in ev_round_over.iter() {
         ev_reset.send(ResetEvent);
     }
@@ -385,7 +415,6 @@ mod tests {
                 assert_eq!(output.hboxes.len(), new_output.hboxes.len());
                 for (h1, h2) in output.hboxes.iter().zip(&new_output.hboxes) {
                     assert_eq!(h1.angle, h2.angle);
-                    assert_eq!(h1.move_state, h2.move_state);
                     assert_eq!(h1.damage, h2.damage);
                     assert_eq!(h1.is_hit, h2.is_hit);
                     assert_eq!(h1.is_player, h2.is_player);

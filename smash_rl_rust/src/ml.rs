@@ -1,13 +1,12 @@
 use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
-use bevy_save::{AppSaveableExt, SavePlugins, WorldSaveableExt};
+use bevy_save::{SavePlugins, WorldSaveableExt};
 use pyo3::prelude::*;
 
 use crate::{
-    character::{Bot, CharAttrs, CharInput, Character, Player, HorizontalDir},
-    hit::{Hit, Hitstun, Projectile},
+    character::{Bot, CharInput, Character, HorizontalDir, Player},
+    hit::{Hit, Projectile},
     micro_fighter::AppState,
-    move_states::{CurrentMoveState, MoveState},
 };
 
 /// Plugin for systems required for ML.
@@ -79,13 +78,10 @@ pub struct HBox {
     /// Whether this box belongs to the player or the opponent.
     #[pyo3(get)]
     pub is_player: bool,
-    /// Damage of the character if this is a hurtbox, or damage the hitbox will
-    /// inflict.
+    /// Damage the hitbox will inflict.
+    /// Only applicable for hitboxes.
     #[pyo3(get)]
     pub damage: u32,
-    /// State the character currently is in.
-    #[pyo3(get)]
-    pub move_state: MoveState,
     /// Direction of the box.
     /// Only applicable for hurtboxes.
     /// -1 for left, 1 for right, 0 otherwise.
@@ -115,7 +111,6 @@ fn collect_hboxes(
         &Character,
         &Collider,
         Option<&Player>,
-        &CurrentMoveState,
     )>,
     hit_query: Query<(&Hit, &GlobalTransform, &Collider)>,
     player_query: Query<Entity, With<Player>>,
@@ -125,9 +120,7 @@ fn collect_hboxes(
 
     // Collect hurtboxes
     let player_e = player_query.single();
-    let mut player_state = None;
-    let mut opp_state = None;
-    for (glob_transform, character, collider, player, curr_move_state) in char_query.iter() {
+    for (glob_transform, character, collider, player) in char_query.iter() {
         let transform = glob_transform.compute_transform();
         let collider = collider.as_cuboid().unwrap();
         let x = (transform.translation.x - collider.half_extents().x) as i32;
@@ -136,17 +129,10 @@ fn collect_hboxes(
         let h = (collider.half_extents().y * 2.0) as u32;
         let angle = 0.0;
         let is_player = player.is_some();
-        let damage = character.damage;
-        let move_state = curr_move_state.move_state;
         let dir = match &character.dir {
             HorizontalDir::Left => -1,
             HorizontalDir::Right => 1,
         };
-        if is_player {
-            player_state = Some(move_state);
-        } else {
-            opp_state = Some(move_state);
-        }
         let hbox = HBox {
             is_hit: false,
             x,
@@ -155,8 +141,7 @@ fn collect_hboxes(
             h,
             angle,
             is_player,
-            damage,
-            move_state,
+            damage: 0,
             dir,
         };
         hbox_coll.hboxes.push(hbox);
@@ -172,7 +157,6 @@ fn collect_hboxes(
         let h = (collider.half_extents().y * 2.0) as u32;
         let angle = transform.rotation.to_euler(EulerRot::XYZ).2;
         let is_player = hit.owner == player_e;
-        let move_state = if is_player { player_state } else { opp_state }.unwrap();
         let hbox = HBox {
             is_hit: true,
             x,
@@ -182,7 +166,6 @@ fn collect_hboxes(
             angle,
             is_player,
             damage: hit.damage,
-            move_state,
             dir: 0,
         };
         hbox_coll.hboxes.push(hbox);

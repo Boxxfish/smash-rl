@@ -5,6 +5,45 @@ from typing import List, Optional, Tuple
 
 import torch
 
+class StateReplayBuffer:
+    """
+    Stores just state information for experience replay.
+    Useful when the environment state requires multiple state heads.
+    """
+    def __init__(self, state_shape: torch.Size, capacity: int):
+        k = torch.float
+        state_shape = torch.Size([capacity] + list(state_shape))
+        self.capacity = capacity
+        self.next = 0
+        d = torch.device("cpu")
+        self.states = torch.zeros(state_shape, dtype=k, device=d, requires_grad=False)
+        self.next_states = torch.zeros(
+            state_shape, dtype=k, device=d, requires_grad=False
+        )
+        self.filled = False
+
+    def insert_step(
+        self,
+        states: torch.Tensor,
+        next_states: torch.Tensor,
+    ):
+        """
+        Inserts a transition from each environment into the buffer. Make sure
+        more data than steps aren't inserted.
+        """
+        batch_size = states.shape[0]
+        d = torch.device("cpu")
+        with torch.no_grad():
+            indices = torch.arange(
+                self.next,
+                (self.next + batch_size),
+            ).remainder(self.capacity)
+            self.states.index_copy_(0, indices, states)
+            self.next_states.index_copy_(0, indices, next_states)
+        self.next = (self.next + batch_size) % self.capacity
+        if self.next == 0:
+            self.filled = True
+
 
 class ReplayBuffer:
     """
@@ -102,6 +141,47 @@ class ReplayBuffer:
             )
             rand_states = self.states.index_select(0, indices)
             rand_next_states = self.next_states.index_select(0, indices)
+            rand_actions = self.actions.index_select(0, indices)
+            rand_rewards = self.rewards.index_select(0, indices)
+            rand_dones = self.dones.index_select(0, indices)
+            rand_masks = self.masks.index_select(0, indices)
+            rand_next_masks = self.next_masks.index_select(0, indices)
+            return (
+                rand_states,
+                rand_next_states,
+                rand_actions,
+                rand_rewards,
+                rand_dones,
+                rand_masks,
+                rand_next_masks,
+            )
+
+    def sample_merged(
+        self, other: StateReplayBuffer, batch_size: int
+    ) -> Tuple[
+        List[torch.Tensor],
+        List[torch.Tensor],
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ]:
+        """
+        Generates minibatches of experience from multiple sources.
+        `other` must be aligned with this one.
+        """
+        with torch.no_grad():
+            indices = torch.randint(
+                self.capacity,
+                [batch_size],
+                dtype=torch.int,
+            )
+            states = [self.states, other.states]
+            next_states = [self.next_states, other.next_states]
+
+            rand_states = [state.index_select(0, indices) for state in states]
+            rand_next_states = [next_state.index_select(0, indices) for next_state in next_states]
             rand_actions = self.actions.index_select(0, indices)
             rand_rewards = self.rewards.index_select(0, indices)
             rand_dones = self.dones.index_select(0, indices)

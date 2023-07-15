@@ -28,7 +28,6 @@ class HBox:
     angle: float
     is_player: bool
     damage: int
-    move_state: int
     dir: int
 
 class StepOutput:
@@ -36,6 +35,10 @@ class StepOutput:
     round_over: bool
     player_won: bool
     game_state: GameState
+    player_damage: int
+    player_state: int
+    opponent_damage: int
+    opponent_state: int
     net_damage: int
 
 class GameState:

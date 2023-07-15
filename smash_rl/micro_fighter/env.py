@@ -38,16 +38,23 @@ class MFEnv(gym.Env):
     An environment that wraps the MicroFighter game.
 
     ### Observation Space
+
+    #### Spatial:
     4x5 channels of size IMG_SIZE x IMG_SIZE. The channels are:
 
     0. 1 if hitbox, 0 if hurtbox.
     1. Damage sustained by hurtboxes or inflicted by hitboxes.
     2. 1 if this is the player, 0 if this is the opponent.
-    3. State of the character that belongs to the hbox.
-    4. 1 if hbox, 0 if empty space.
-    5. -1 if hurtbox facing left, 1 if hurtbox facing right, 0 for hitboxes.
+    3. 1 if hbox, 0 if empty space.
+    4. -1 if hurtbox facing left, 1 if hurtbox facing right, 0 for hitboxes.
 
     We manually perform frame stacking.
+
+    #### Stats:
+    0 - 15. Player state.
+    16. Player damage.
+    17 - 32. Opponent state.
+    33. Opponent damage.
 
     ### Action Space
     0. Do nothing.
@@ -83,16 +90,28 @@ class MFEnv(gym.Env):
         """
 
         self.game = MicroFighter(False)
-        self.observation_space = gym.spaces.Box(-1.0, 1.0, [num_frames, 6, IMG_SIZE, IMG_SIZE])
+        self.num_channels = 5
+        self.observation_space = gym.spaces.Tuple(
+            [
+                gym.spaces.Box(
+                    -1.0, 1.0, [num_frames, self.num_channels, IMG_SIZE, IMG_SIZE]
+                ),
+                gym.spaces.Box(0.0, 2.0, [34]),
+            ]
+        )
         self.action_space = gym.spaces.Discrete(9)
+        self.player_stats = np.zeros([17])
+        self.bot_stats = np.zeros([17])
         self.render_mode = render_mode
         self.num_frames = num_frames
         self.dmg_reward_amount = 1.0
         self.player_frame_stack = [
-            np.zeros([6, IMG_SIZE, IMG_SIZE]) for _ in range(self.num_frames)
+            np.zeros([self.num_channels, IMG_SIZE, IMG_SIZE])
+            for _ in range(self.num_frames)
         ]
         self.bot_frame_stack = [
-            np.zeros([6, IMG_SIZE, IMG_SIZE]) for _ in range(self.num_frames)
+            np.zeros([self.num_channels, IMG_SIZE, IMG_SIZE])
+            for _ in range(self.num_frames)
         ]
         self.max_skip_frames = max_skip_frames
         self.view_channels = view_channels
@@ -103,7 +122,9 @@ class MFEnv(gym.Env):
             )
             self.clock = pygame.time.Clock()
 
-    def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+    def step(
+        self, action: int
+    ) -> tuple[tuple[np.ndarray, np.ndarray], float, bool, bool, dict[str, Any]]:
         skip_frames = self.max_skip_frames
         dmg_reward = 0.0
         for _ in range(skip_frames + 1):
@@ -111,11 +132,25 @@ class MFEnv(gym.Env):
             dmg_reward += step_output.net_damage
             if step_output.round_over:
                 break
-
+        
+        # Spatial observation
         channels = self.gen_channels(step_output, is_player=True)
-        self.player_frame_stack = self.insert_obs(np.stack(channels), self.player_frame_stack)
+        self.player_frame_stack = self.insert_obs(
+            np.stack(channels), self.player_frame_stack
+        )
         bot_channels = self.gen_channels(step_output, is_player=False)
-        self.bot_frame_stack = self.insert_obs(np.stack(bot_channels), self.bot_frame_stack)
+        self.bot_frame_stack = self.insert_obs(
+            np.stack(bot_channels), self.bot_frame_stack
+        )
+
+        # Stats observation
+        self.player_stats = np.zeros([17])
+        self.player_stats[int(step_output.player_state)] = 1
+        self.player_stats[16] = step_output.player_damage / 100.0
+        self.bot_stats = np.zeros([17])
+        self.bot_stats[int(step_output.opponent_state)] = 1
+        self.bot_stats[16] = step_output.opponent_damage / 100.0
+        stats_obs = np.concatenate([self.player_stats, self.bot_stats])
 
         terminated = step_output.round_over
         round_reward = 0.0
@@ -124,24 +159,39 @@ class MFEnv(gym.Env):
         dmg_reward = dmg_reward / 10
 
         reward = dmg_reward * (self.dmg_reward_amount) + round_reward
-        
-        return np.stack(self.player_frame_stack), reward, terminated, False, {}
+
+        return (np.stack(self.player_frame_stack), stats_obs), reward, terminated, False, {}
 
     def reset(
         self, *args, seed=None, options=None
-    ) -> tuple[np.ndarray, dict[str, Any]]:
+    ) -> tuple[tuple[np.ndarray, np.ndarray], dict[str, Any]]:
         step_output = self.game.reset()
         self.player_frame_stack = [
-            np.zeros([6, IMG_SIZE, IMG_SIZE]) for _ in range(self.num_frames)
+            np.zeros([self.num_channels, IMG_SIZE, IMG_SIZE])
+            for _ in range(self.num_frames)
         ]
         self.bot_frame_stack = [
-            np.zeros([6, IMG_SIZE, IMG_SIZE]) for _ in range(self.num_frames)
+            np.zeros([self.num_channels, IMG_SIZE, IMG_SIZE])
+            for _ in range(self.num_frames)
         ]
         channels = self.gen_channels(step_output, is_player=True)
-        self.player_frame_stack = self.insert_obs(np.stack(channels), self.player_frame_stack)
+        self.player_frame_stack = self.insert_obs(
+            np.stack(channels), self.player_frame_stack
+        )
         bot_channels = self.gen_channels(step_output, is_player=False)
-        self.bot_frame_stack = self.insert_obs(np.stack(bot_channels), self.bot_frame_stack)
-        return np.stack(self.player_frame_stack), {}
+        self.bot_frame_stack = self.insert_obs(
+            np.stack(bot_channels), self.bot_frame_stack
+        )
+
+        self.player_stats = np.zeros([17])
+        self.player_stats[int(step_output.player_state)] = 1
+        self.player_stats[16] = step_output.player_damage / 100.0
+        self.bot_stats = np.zeros([17])
+        self.bot_stats[int(step_output.opponent_state)] = 1
+        self.bot_stats[16] = step_output.opponent_damage / 100.0
+        stats_obs = np.concatenate([self.player_stats, self.bot_stats])
+        
+        return (np.stack(self.player_frame_stack), stats_obs), {}
 
     def gen_channels(
         self, step_output: StepOutput, is_player: bool
@@ -154,7 +204,6 @@ class MFEnv(gym.Env):
         hit_channel = np.zeros([IMG_SIZE, IMG_SIZE])
         dmg_channel = np.zeros([IMG_SIZE, IMG_SIZE])
         player_channel = np.zeros([IMG_SIZE, IMG_SIZE])
-        state_channel = np.zeros([IMG_SIZE, IMG_SIZE])
         box_channel = np.zeros([IMG_SIZE, IMG_SIZE])
         dir_channel = np.zeros([IMG_SIZE, IMG_SIZE])
         for hbox in hboxes:
@@ -190,12 +239,9 @@ class MFEnv(gym.Env):
             box_arr = np.array(box_img)
             inv_box_arr = 1 - box_arr
             hit_channel = hit_channel * inv_box_arr + box_arr * float(hbox.is_hit)
-            dmg_channel = dmg_channel * inv_box_arr + box_arr * (hbox.damage / 100)
+            dmg_channel = dmg_channel * inv_box_arr + box_arr * (hbox.damage / 10)
             player_channel = player_channel * inv_box_arr + box_arr * float(
                 hbox.is_player == is_player
-            )
-            state_channel = state_channel * inv_box_arr + box_arr * (
-                int(hbox.move_state) / 8
             )
             box_channel = box_channel * inv_box_arr + box_arr
             dir_channel = dir_channel * inv_box_arr + box_arr * hbox.dir
@@ -203,12 +249,13 @@ class MFEnv(gym.Env):
             hit_channel,
             dmg_channel,
             player_channel,
-            state_channel,
             box_channel,
             dir_channel,
         ]
 
-    def insert_obs(self, obs: np.ndarray, frame_stack: list[np.ndarray]) -> list[np.ndarray]:
+    def insert_obs(
+        self, obs: np.ndarray, frame_stack: list[np.ndarray]
+    ) -> list[np.ndarray]:
         """
         Inserts a new frame and cycles the observation.
         Sets frame "n" to the current value of frame "n - 1", from 1 to `self.num_frames`.
@@ -233,21 +280,21 @@ class MFEnv(gym.Env):
             pygame.display.flip()
             self.clock.tick(60)
 
-    def player_obs(self) -> np.ndarray:
+    def player_obs(self) -> tuple[np.ndarray, np.ndarray]:
         """
         Non-standard method for single agent envs.
         Returns an observation for the player. This observation is manually frame
         stacked.
         """
-        return np.stack(self.player_frame_stack)
+        return (np.stack(self.player_frame_stack), np.concatenate([self.player_stats, self.bot_stats]))
 
-    def bot_obs(self) -> np.ndarray:
+    def bot_obs(self) -> tuple[np.ndarray, np.ndarray]:
         """
         Non-standard method for single agent envs.
         Returns an observation for the bot. This observation is manually frame
         stacked.
         """
-        return np.stack(self.bot_frame_stack)
+        return (np.stack(self.bot_frame_stack), np.concatenate([self.bot_stats, self.player_stats]))
 
     def bot_step(self, action: int):
         """
@@ -260,7 +307,9 @@ class MFEnv(gym.Env):
         """
         Returns the current state of the environment.
         """
-        return EnvState(self.player_frame_stack, self.bot_frame_stack, self.game.get_game_state())
+        return EnvState(
+            self.player_frame_stack, self.bot_frame_stack, self.game.get_game_state()
+        )
 
     def load_state(self, state: EnvState):
         """
