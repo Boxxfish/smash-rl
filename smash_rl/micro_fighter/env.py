@@ -40,21 +40,22 @@ class MFEnv(gym.Env):
     ### Observation Space
 
     #### Spatial:
-    4x5 channels of size IMG_SIZE x IMG_SIZE. The channels are:
+    4x4 channels of size IMG_SIZE x IMG_SIZE. The channels are:
 
     0. 1 if hitbox, 0 if hurtbox.
     1. Damage sustained by hurtboxes or inflicted by hitboxes.
     2. 1 if this is the player, 0 if this is the opponent.
     3. 1 if hbox, 0 if empty space.
-    4. -1 if hurtbox facing left, 1 if hurtbox facing right, 0 for hitboxes.
 
     We manually perform frame stacking.
 
     #### Stats:
     0 - 15. Player state.
     16. Player damage.
-    17 - 32. Opponent state.
-    33. Opponent damage.
+    17. Direction, -1 if left, 1 if right.
+    18 - 33. Opponent state.
+    34. Opponent damage.
+    35. Direction, -1 if left, 1 if right.
 
     ### Action Space
     0. Do nothing.
@@ -90,18 +91,18 @@ class MFEnv(gym.Env):
         """
 
         self.game = MicroFighter(False)
-        self.num_channels = 5
+        self.num_channels = 4
         self.observation_space = gym.spaces.Tuple(
             [
                 gym.spaces.Box(
                     -1.0, 1.0, [num_frames, self.num_channels, IMG_SIZE, IMG_SIZE]
                 ),
-                gym.spaces.Box(0.0, 2.0, [34]),
+                gym.spaces.Box(-1.0, 2.0, [36]),
             ]
         )
         self.action_space = gym.spaces.Discrete(9)
-        self.player_stats = np.zeros([17])
-        self.bot_stats = np.zeros([17])
+        self.player_stats = np.zeros([18])
+        self.bot_stats = np.zeros([18])
         self.render_mode = render_mode
         self.num_frames = num_frames
         self.dmg_reward_amount = 1.0
@@ -144,12 +145,14 @@ class MFEnv(gym.Env):
         )
 
         # Stats observation
-        self.player_stats = np.zeros([17])
+        self.player_stats = np.zeros([18])
         self.player_stats[int(step_output.player_state)] = 1
         self.player_stats[16] = step_output.player_damage / 100.0
-        self.bot_stats = np.zeros([17])
+        self.player_stats[17] = step_output.player_dir
+        self.bot_stats = np.zeros([18])
         self.bot_stats[int(step_output.opponent_state)] = 1
         self.bot_stats[16] = step_output.opponent_damage / 100.0
+        self.bot_stats[17] = step_output.opponent_dir
         stats_obs = np.concatenate([self.player_stats, self.bot_stats])
 
         terminated = step_output.round_over
@@ -183,12 +186,14 @@ class MFEnv(gym.Env):
             np.stack(bot_channels), self.bot_frame_stack
         )
 
-        self.player_stats = np.zeros([17])
+        self.player_stats = np.zeros([18])
         self.player_stats[int(step_output.player_state)] = 1
         self.player_stats[16] = step_output.player_damage / 100.0
-        self.bot_stats = np.zeros([17])
+        self.player_stats[17] = step_output.player_dir
+        self.bot_stats = np.zeros([18])
         self.bot_stats[int(step_output.opponent_state)] = 1
         self.bot_stats[16] = step_output.opponent_damage / 100.0
+        self.bot_stats[17] = step_output.opponent_dir
         stats_obs = np.concatenate([self.player_stats, self.bot_stats])
         
         return (np.stack(self.player_frame_stack), stats_obs), {}
@@ -205,7 +210,7 @@ class MFEnv(gym.Env):
         dmg_channel = np.zeros([IMG_SIZE, IMG_SIZE])
         player_channel = np.zeros([IMG_SIZE, IMG_SIZE])
         box_channel = np.zeros([IMG_SIZE, IMG_SIZE])
-        dir_channel = np.zeros([IMG_SIZE, IMG_SIZE])
+        
         for hbox in hboxes:
             box_img = Image.new("1", (IMG_SIZE, IMG_SIZE))
             box_draw = ImageDraw.ImageDraw(box_img)
@@ -244,13 +249,11 @@ class MFEnv(gym.Env):
                 hbox.is_player == is_player
             )
             box_channel = box_channel * inv_box_arr + box_arr
-            dir_channel = dir_channel * inv_box_arr + box_arr * hbox.dir
         return [
             hit_channel,
             dmg_channel,
             player_channel,
             box_channel,
-            dir_channel,
         ]
 
     def insert_obs(

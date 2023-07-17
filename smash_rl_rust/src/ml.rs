@@ -4,7 +4,7 @@ use bevy_save::{SavePlugins, WorldSaveableExt};
 use pyo3::prelude::*;
 
 use crate::{
-    character::{Bot, CharInput, Character, HorizontalDir, Player},
+    character::{Bot, CharInput, Character, Player},
     hit::{Hit, Projectile},
     micro_fighter::AppState,
 };
@@ -82,11 +82,6 @@ pub struct HBox {
     /// Only applicable for hitboxes.
     #[pyo3(get)]
     pub damage: u32,
-    /// Direction of the box.
-    /// Only applicable for hurtboxes.
-    /// -1 for left, 1 for right, 0 otherwise.
-    #[pyo3(get)]
-    pub dir: i32,
 }
 
 /// Resource that stores all HBoxes.
@@ -108,10 +103,9 @@ pub struct NetDamage {
 fn collect_hboxes(
     char_query: Query<(
         &GlobalTransform,
-        &Character,
         &Collider,
         Option<&Player>,
-    )>,
+    ), With<Character>>,
     hit_query: Query<(&Hit, &GlobalTransform, &Collider)>,
     player_query: Query<Entity, With<Player>>,
     mut hbox_coll: ResMut<HBoxCollection>,
@@ -120,7 +114,7 @@ fn collect_hboxes(
 
     // Collect hurtboxes
     let player_e = player_query.single();
-    for (glob_transform, character, collider, player) in char_query.iter() {
+    for (glob_transform, collider, player) in char_query.iter() {
         let transform = glob_transform.compute_transform();
         let collider = collider.as_cuboid().unwrap();
         let x = (transform.translation.x - collider.half_extents().x) as i32;
@@ -129,10 +123,6 @@ fn collect_hboxes(
         let h = (collider.half_extents().y * 2.0) as u32;
         let angle = 0.0;
         let is_player = player.is_some();
-        let dir = match &character.dir {
-            HorizontalDir::Left => -1,
-            HorizontalDir::Right => 1,
-        };
         let hbox = HBox {
             is_hit: false,
             x,
@@ -142,7 +132,6 @@ fn collect_hboxes(
             angle,
             is_player,
             damage: 0,
-            dir,
         };
         hbox_coll.hboxes.push(hbox);
     }
@@ -166,7 +155,6 @@ fn collect_hboxes(
             angle,
             is_player,
             damage: hit.damage,
-            dir: 0,
         };
         hbox_coll.hboxes.push(hbox);
     }

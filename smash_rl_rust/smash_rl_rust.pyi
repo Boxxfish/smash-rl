@@ -28,7 +28,6 @@ class HBox:
     angle: float
     is_player: bool
     damage: int
-    dir: int
 
 class StepOutput:
     hboxes: List[HBox]
@@ -37,8 +36,10 @@ class StepOutput:
     game_state: GameState
     player_damage: int
     player_state: int
+    player_dir: int
     opponent_damage: int
     opponent_state: int
+    opponent_dir: int
     net_damage: int
 
 class GameState:

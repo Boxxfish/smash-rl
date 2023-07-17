@@ -24,9 +24,9 @@ _: Any
 INF = 10**8
 
 # Hyperparameters
-train_steps = 256  # Number of steps to step through during sampling.
+train_steps = 128  # Number of steps to step through during sampling.
 iterations = 10000  # Number of sample/train iterations.
-train_iters = 16  # Number of passes over the samples collected.
+train_iters = 8  # Number of passes over the samples collected.
 train_batch_size = 128  # Minibatch size while training models.
 discount = 0.99  # Discount factor applied to rewards.
 q_epsilon = 0.9  # Epsilon for epsilon greedy strategy. This gets annealed over time.
@@ -105,11 +105,12 @@ class QNet(nn.Module):
         value = self.value(x)
         return value + advantage - advantage.mean(1, keepdim=True)
 
+
 env = TimeLimit(
     MFEnv(max_skip_frames=max_skip_frames, num_frames=num_frames),
     time_limit,
 )
-test_env = MFEnv(max_skip_frames=max_skip_frames, num_frames=num_frames)
+test_env = TimeLimit(MFEnv(max_skip_frames=max_skip_frames, num_frames=num_frames), max_eval_steps)
 
 # If evaluating, load the latest policy
 if args.eval:
@@ -122,13 +123,18 @@ if args.eval:
     spatial_obs_space = obs_space.spaces[0]
     stats_obs_space = obs_space.spaces[1]
     assert isinstance(act_space, gym.spaces.Discrete)
-    q_net = QNet(torch.Size(spatial_obs_space.shape), stats_obs_space.shape[0], int(act_space.n))
+    q_net = QNet(
+        torch.Size(spatial_obs_space.shape), stats_obs_space.shape[0], int(act_space.n)
+    )
     q_net.load_state_dict(torch.load("temp/q_net.pt"))
-    test_env = MFEnv(
-        max_skip_frames=max_skip_frames,
-        render_mode="human",
-        view_channels=(0, 2, 4),
-        num_frames=num_frames,
+    test_env = TimeLimit(
+        MFEnv(
+            max_skip_frames=max_skip_frames,
+            render_mode="human",
+            view_channels=(0, 2, 3),
+            num_frames=num_frames,
+        ),
+        max_eval_steps,
     )
     with torch.no_grad():
         (obs_1_, obs_2_), _ = test_env.reset()
@@ -138,20 +144,14 @@ if args.eval:
             bot_obs_1, bot_obs_2 = test_env.bot_obs()
             bot_q_vals = q_net(
                 torch.from_numpy(bot_obs_1).float().unsqueeze(0),
-                torch.from_numpy(bot_obs_2).float().unsqueeze(0)
+                torch.from_numpy(bot_obs_2).float().unsqueeze(0),
             ).squeeze()
             bot_action = bot_q_vals.argmax(0).item()
             test_env.bot_step(bot_action)
 
             q_vals = q_net(eval_obs_1.unsqueeze(0), eval_obs_2.unsqueeze(0)).squeeze()
             action = q_vals.argmax(0).item()
-            (obs_1_, obs_2_), reward, eval_done, eval_trunc, _ = test_env.step(
-                action
-            )
-            eval_obs_1 = torch.from_numpy(np.array(obs_1_)).float()
-            eval_obs_2 = torch.from_numpy(np.array(obs_2_)).float()
-
-            obs_, reward, eval_done, eval_trunc, _ = test_env.step(action)
+            (obs_1_, obs_2_), reward, eval_done, eval_trunc, _ = test_env.step(action)
             test_env.render()
             eval_obs_1 = torch.from_numpy(np.array(obs_1_)).float()
             eval_obs_2 = torch.from_numpy(np.array(obs_2_)).float()
@@ -189,7 +189,9 @@ spatial_obs_space = obs_space.spaces[0]
 stats_obs_space = obs_space.spaces[1]
 assert isinstance(act_space, gym.spaces.Discrete)
 assert isinstance(env.env, MFEnv)
-q_net = QNet(torch.Size(spatial_obs_space.shape), stats_obs_space.shape[0], int(act_space.n))
+q_net = QNet(
+    torch.Size(spatial_obs_space.shape), stats_obs_space.shape[0], int(act_space.n)
+)
 if args.resume:
     q_net.load_state_dict(torch.load("temp/q_net.pt"))
 q_net_target = copy.deepcopy(q_net)
@@ -220,7 +222,7 @@ obs_2 = torch.from_numpy(obs_2_).float().unsqueeze(0)
 for step in tqdm(range(iterations), position=0):
     percent_done = step / iterations
     q_epsilon_real = q_epsilon * max(1.0 - percent_done, 0.05)
-    # env.env.set_dmg_reward_amount(1.0 - percent_done)
+    env.env.set_dmg_reward_amount(1.0 - percent_done)
 
     # Collect experience
     with torch.no_grad():
@@ -232,7 +234,7 @@ for step in tqdm(range(iterations), position=0):
                 bot_obs_1, bot_obs_2 = env.bot_obs()
                 bot_q_vals = bot_q_net(
                     torch.from_numpy(bot_obs_1).float().unsqueeze(0),
-                    torch.from_numpy(bot_obs_2).float().unsqueeze(0)
+                    torch.from_numpy(bot_obs_2).float().unsqueeze(0),
                 ).squeeze()
                 bot_action = bot_q_vals.argmax(0).item()
             env.bot_step(bot_action)
@@ -303,7 +305,11 @@ for step in tqdm(range(iterations), position=0):
                 (obs_1_, obs_2_), _ = test_env.reset()
                 eval_obs_1 = torch.from_numpy(np.array(obs_1_)).float()
                 eval_obs_2 = torch.from_numpy(np.array(obs_2_)).float()
-                eval_bot_q_net = QNet(torch.Size(spatial_obs_space.shape), stats_obs_space.shape[0], int(act_space.n))
+                eval_bot_q_net = QNet(
+                    torch.Size(spatial_obs_space.shape),
+                    stats_obs_space.shape[0],
+                    int(act_space.n),
+                )
                 for _ in range(eval_steps):
                     i = random.randrange(0, len(bot_data))
                     state_dict = bot_data[i]["state_dict"]
@@ -316,16 +322,22 @@ for step in tqdm(range(iterations), position=0):
                             bot_obs_1, bot_obs_2 = test_env.bot_obs()
                             bot_q_vals = bot_q_net(
                                 torch.from_numpy(bot_obs_1).float().unsqueeze(0),
-                                torch.from_numpy(bot_obs_2).float().unsqueeze(0)
+                                torch.from_numpy(bot_obs_2).float().unsqueeze(0),
                             ).squeeze()
                             bot_action = bot_q_vals.argmax(0).item()
                             test_env.bot_step(bot_action)
 
-                            q_vals = q_net(eval_obs_1.unsqueeze(0), eval_obs_2.unsqueeze(0)).squeeze()
+                            q_vals = q_net(
+                                eval_obs_1.unsqueeze(0), eval_obs_2.unsqueeze(0)
+                            ).squeeze()
                             action = q_vals.argmax(0).item()
-                            (obs_1_, obs_2_), reward, eval_done, eval_trunc, _ = test_env.step(
-                                action
-                            )
+                            (
+                                (obs_1_, obs_2_),
+                                reward,
+                                eval_done,
+                                eval_trunc,
+                                _,
+                            ) = test_env.step(action)
                             eval_obs_1 = torch.from_numpy(np.array(obs_1_)).float()
                             eval_obs_2 = torch.from_numpy(np.array(obs_2_)).float()
                             if eval_done or eval_trunc:

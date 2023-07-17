@@ -77,12 +77,18 @@ pub struct StepOutput {
     /// State of the player.
     #[pyo3(get)]
     pub player_state: MoveState,
+    /// Direction the player is facing.
+    #[pyo3(get)]
+    pub player_dir: i32,
     /// Damage the opponent is at.
     #[pyo3(get)]
     pub opponent_damage: u32,
     /// State of the opponent.
     #[pyo3(get)]
     pub opponent_state: MoveState,
+    /// Direction the opponent is facing.
+    #[pyo3(get)]
+    pub opponent_dir: i32,
 }
 
 /// Simple fighting game.
@@ -189,12 +195,20 @@ impl MicroFighter {
             .single(world);
         let player_damage = p_char.damage;
         let player_state = p_state.move_state;
+        let player_dir = match p_char.dir {
+            HorizontalDir::Left => -1,
+            HorizontalDir::Right => 1,
+        };
 
         let (b_char, b_state) = world
             .query_filtered::<(&Character, &CurrentMoveState), With<Bot>>()
             .single(world);
         let opponent_damage = b_char.damage;
         let opponent_state = b_state.move_state;
+        let opponent_dir = match b_char.dir {
+            HorizontalDir::Left => -1,
+            HorizontalDir::Right => 1,
+        };
 
         let hbox_coll = world.get_resource::<HBoxCollection>().unwrap();
         let net_dmg = world.get_resource::<NetDamage>().unwrap();
@@ -207,6 +221,8 @@ impl MicroFighter {
             player_state,
             opponent_damage,
             opponent_state,
+            player_dir,
+            opponent_dir,
         }
     }
 
