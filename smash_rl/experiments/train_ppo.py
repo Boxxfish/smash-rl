@@ -27,19 +27,19 @@ _: Any
 
 # Hyperparameters
 num_envs = 64  # Number of environments to step through at once during sampling.
-train_steps = 32  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
+train_steps = 128  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
 iterations = 1000  # Number of sample/train iterations.
 train_iters = 1  # Number of passes over the samples collected.
 train_batch_size = 512  # Minibatch size while training models.
-discount = 0.98  # Discount factor applied to rewards.
+discount = 0.995  # Discount factor applied to rewards.
 lambda_ = 0.95  # Lambda for GAE.
 epsilon = 0.2  # Epsilon for importance sample clipping.
 v_lr = 0.001  # Learning rate of the value net.
 p_lr = 0.0003  # Learning rate of the policy net.
 num_frames = 4  # Number of frames in frame stack.
 max_skip_frames = 1  # Max number of frames to skip.
-time_limit = 500  # Time limit before truncation.
-bot_update = 500  # Number of iterations before caching the current policy.
+time_limit = 10000  # Time limit before truncation.
+bot_update = 20  # Number of iterations before caching the current policy.
 max_bots = 6  # Maximum number of bots to store.
 start_elo = 1200  # Starting ELO score for each agent.
 elo_k = 16  # ELO adjustment constant.
@@ -50,7 +50,7 @@ device = torch.device("cuda")  # Device to use during training.
 
 # Argument parsing
 parser = ArgumentParser()
-# parser.add_argument("--eval", action="store_true")
+parser.add_argument("--eval", action="store_true")
 args = parser.parse_args()
 
 
@@ -137,6 +137,77 @@ class PolicyNet(nn.Module):
         x = self.net(x)
         return x
 
+env = SyncVectorEnv(
+    [
+        lambda: TimeLimit(
+            MFEnv(max_skip_frames=max_skip_frames, num_frames=num_frames),
+            time_limit,
+        )
+        for _ in range(num_envs)
+    ]
+)
+test_env = TimeLimit(
+    MFEnv(max_skip_frames=max_skip_frames, num_frames=num_frames), max_eval_steps
+)
+
+# If evaluating, load the latest policy
+if args.eval:
+    eval_done = False
+    obs_space = env.single_observation_space
+    act_space = env.single_action_space
+    assert isinstance(obs_space, gym.spaces.Tuple)
+    assert isinstance(obs_space.spaces[0], gym.spaces.Box)
+    assert isinstance(obs_space.spaces[1], gym.spaces.Box)
+    spatial_obs_space = obs_space.spaces[0]
+    stats_obs_space = obs_space.spaces[1]
+    assert isinstance(act_space, gym.spaces.Discrete)
+    p_net = PolicyNet(
+        torch.Size(spatial_obs_space.shape), stats_obs_space.shape[0], int(act_space.n)
+    )
+    p_net.load_state_dict(torch.load("temp/p_net.pt"))
+    test_env = TimeLimit(
+        MFEnv(
+            max_skip_frames=max_skip_frames,
+            render_mode="human",
+            view_channels=(0, 2, 3),
+            num_frames=num_frames,
+        ),
+        max_eval_steps,
+    )
+    with torch.no_grad():
+        (obs_1_, obs_2_), _ = test_env.reset()
+        eval_obs_1 = torch.from_numpy(np.array(obs_1_)).float()
+        eval_obs_2 = torch.from_numpy(np.array(obs_2_)).float()
+        while True:
+            bot_obs_1, bot_obs_2 = test_env.bot_obs()
+            bot_action_probs = p_net(
+                torch.from_numpy(bot_obs_1).unsqueeze(0).float(),
+                torch.from_numpy(bot_obs_2).unsqueeze(0).float(),
+            ).squeeze()
+            bot_action = (
+                Categorical(logits=bot_action_probs).sample().numpy()
+            )
+            test_env.bot_step(bot_action)
+
+            action_probs = p_net(
+                eval_obs_1.unsqueeze(0), eval_obs_2.unsqueeze(0)
+            ).squeeze()
+            action = Categorical(logits=action_probs).sample().numpy()
+            (
+                (obs_1_, obs_2_),
+                reward,
+                eval_done,
+                eval_trunc,
+                eval_info,
+            ) = test_env.step(action)
+
+            test_env.render()
+            eval_obs_1 = torch.from_numpy(np.array(obs_1_)).float()
+            eval_obs_2 = torch.from_numpy(np.array(obs_2_)).float()
+            if eval_done or eval_trunc:
+                (obs_1_, obs_2_), _ = test_env.reset()
+                eval_obs_1 = torch.from_numpy(np.array(obs_1_)).float()
+                eval_obs_2 = torch.from_numpy(np.array(obs_2_)).float()
 
 wandb.init(
     project="smash-rl",
@@ -153,19 +224,6 @@ wandb.init(
         "v_lr": v_lr,
         "p_lr": p_lr,
     },
-)
-
-env = SyncVectorEnv(
-    [
-        lambda: TimeLimit(
-            MFEnv(max_skip_frames=max_skip_frames, num_frames=num_frames),
-            time_limit,
-        )
-        for _ in range(num_envs)
-    ]
-)
-test_env = TimeLimit(
-    MFEnv(max_skip_frames=max_skip_frames, num_frames=num_frames), max_eval_steps
 )
 
 # Initialize policy and value networks
@@ -217,6 +275,7 @@ for step in tqdm(range(iterations), position=0):
 
     # Collect experience
     with torch.no_grad():
+        total_entropy = 0.0
         for _ in tqdm(range(train_steps), position=1):
             # Choose bot action
             for env_index, env_ in enumerate(env.envs):
@@ -232,7 +291,9 @@ for step in tqdm(range(iterations), position=0):
 
             # Choose player action
             action_probs = p_net(obs_1, obs_2)
-            actions = Categorical(logits=action_probs).sample().numpy()
+            action_distr = Categorical(logits=action_probs)
+            total_entropy += action_distr.entropy().mean()
+            actions = action_distr.sample().numpy()
             (obs_spatial_, obs_stats_), rewards, dones, truncs, _ = env.step(actions)
 
             try:
@@ -318,21 +379,22 @@ for step in tqdm(range(iterations), position=0):
                             reward,
                             eval_done,
                             eval_trunc,
-                            _,
+                            eval_info,
                         ) = test_env.step(actions)
 
                         eval_obs_1 = torch.from_numpy(np.array(obs_1_)).float()
                         eval_obs_2 = torch.from_numpy(np.array(obs_2_)).float()
                         if eval_done or eval_trunc:
-                            if reward > 0.5:
-                                # Current network won
-                                a = 1.0
-                                b = 0.0
-                            elif reward < -0.5:
-                                # Opponent won
-                                b = 1.0
-                                a = 0.0
-                            else:
+                            if eval_done:
+                                if eval_info["player_won"]:
+                                    # Current network won
+                                    a = 1.0
+                                    b = 0.0
+                                else:
+                                    # Opponent won
+                                    b = 1.0
+                                    a = 0.0
+                            elif eval_trunc:
                                 # They tied
                                 a = 0.5
                                 b = 0.5
@@ -359,6 +421,7 @@ for step in tqdm(range(iterations), position=0):
         {
             "avg_v_loss": total_v_loss / train_iters,
             "avg_p_loss": total_p_loss / train_iters,
+            "entropy": total_entropy / train_steps,
         }
     )
 

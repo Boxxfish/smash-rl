@@ -336,20 +336,21 @@ for step in tqdm(range(iterations), position=0):
                                 reward,
                                 eval_done,
                                 eval_trunc,
-                                _,
+                                eval_info,
                             ) = test_env.step(action)
                             eval_obs_1 = torch.from_numpy(np.array(obs_1_)).float()
                             eval_obs_2 = torch.from_numpy(np.array(obs_2_)).float()
                             if eval_done or eval_trunc:
-                                if reward > 0.5:
-                                    # Current network won
-                                    a = 1.0
-                                    b = 0.0
-                                elif reward < -0.5:
-                                    # Opponent won
-                                    b = 1.0
-                                    a = 0.0
-                                else:
+                                if eval_done:
+                                    if eval_info["player_won"]:
+                                        # Current network won
+                                        a = 1.0
+                                        b = 0.0
+                                    else:
+                                        # Opponent won
+                                        b = 1.0
+                                        a = 0.0
+                                elif eval_trunc:
                                     # They tied
                                     a = 0.5
                                     b = 0.5

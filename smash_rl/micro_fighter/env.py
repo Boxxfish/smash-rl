@@ -163,7 +163,7 @@ class MFEnv(gym.Env):
 
         reward = dmg_reward * (self.dmg_reward_amount) + round_reward
 
-        return (np.stack(self.player_frame_stack), stats_obs), reward, terminated, False, {}
+        return (np.stack(self.player_frame_stack), stats_obs), reward, terminated, False, {"player_won": step_output.player_won}
 
     def reset(
         self, *args, seed=None, options=None
