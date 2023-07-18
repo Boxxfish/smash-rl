@@ -328,6 +328,8 @@ for step in tqdm(range(iterations), position=0):
                 (obs_1_, obs_2_), _ = env.reset()
                 obs_1 = torch.from_numpy(obs_1_).float()
                 obs_2 = torch.from_numpy(obs_2_).float()
+        buffer_spatial.insert_final_step(obs_1)
+        buffer_stats.insert_final_step(obs_2)
 
     # Train
     total_p_loss, total_v_loss = train_ppo(

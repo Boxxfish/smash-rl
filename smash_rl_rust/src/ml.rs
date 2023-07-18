@@ -14,7 +14,9 @@ pub struct MLPlugin;
 
 impl Plugin for MLPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(MinimalPlugins)
+        app.add_plugins(MinimalPlugins.set(TaskPoolPlugin {
+            task_pool_options: TaskPoolOptions::with_num_threads(1),
+        }))
             .add_plugin(TransformPlugin)
             .add_plugin(HierarchyPlugin)
             .add_plugins(SavePlugins)
