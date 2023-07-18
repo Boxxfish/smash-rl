@@ -8,6 +8,37 @@ import torch
 from torch import nn
 
 
+class StateRolloutBuffer:
+    def __init__(
+        self,
+        state_shape: torch.Size,
+        num_envs: int,
+        num_steps: int,
+    ):
+        k = torch.float
+        state_shape = torch.Size([num_steps + 1, num_envs] + list(state_shape))
+        self.num_envs = num_envs
+        self.num_steps = num_steps
+        self.next = 0
+        d = torch.device("cpu")
+        self.states = torch.zeros(state_shape, dtype=k, device=d, requires_grad=False)
+
+    def insert_step(
+        self,
+        states: torch.Tensor,
+    ):
+        with torch.no_grad():
+            self.states[self.next].copy_(states)
+        self.next += 1
+
+    def insert_final_step(self, states: torch.Tensor):
+        with torch.no_grad():
+            self.states[self.next].copy_(states)
+
+    def clear(self):
+        self.next = 0
+
+
 class RolloutBuffer:
     """
     Stores transitions and generates mini batches from the latest policy. Also
@@ -168,6 +199,86 @@ class RolloutBuffer:
                         rand_prev_states[start:end].reshape(
                             [batch_size] + list(self.states.shape)[2:]
                         ),
+                        rand_actions[start:end].reshape(
+                            [batch_size] + list(self.actions.shape)[2:]
+                        ),
+                        rand_action_probs[start:end].reshape(
+                            [batch_size] + list(self.action_probs.shape)[2:]
+                        ),
+                        rand_returns[start:end].reshape([batch_size, 1]),
+                        rand_advantages[start:end].reshape([batch_size, 1]),
+                        rand_masks[start:end].reshape(
+                            [batch_size] + list(self.action_probs.shape)[2:]
+                        ),
+                    )
+                )
+            return batches
+
+    def samples_merged(
+        self, other: StateRolloutBuffer, batch_size: int, discount: float, lambda_: float, v_net: nn.Module
+    ) -> list[
+        Tuple[
+            list[torch.Tensor],
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+        ]
+    ]:
+        with torch.no_grad():
+            d = torch.device("cpu")
+            returns = torch.zeros(
+                [self.num_steps, self.num_envs], dtype=torch.float, device=d
+            )
+            advantages = torch.zeros(
+                [self.num_steps, self.num_envs], dtype=torch.float, device=d
+            )
+            step_returns: torch.Tensor = v_net(self.states[self.next], other.states[self.next]).squeeze()
+
+            # Calculate advantage estimates and rewards to go
+            state_values = step_returns.clone()
+            step_advantages = torch.zeros([self.num_envs], dtype=torch.float, device=d)
+            for i in reversed(range(self.num_steps)):
+                prev_states = (self.states[i], other.states[i])
+                rewards = self.rewards[i]
+                inv_dones = 1.0 - self.dones[i]
+                inv_truncs = 1.0 - self.truncs[i]
+                prev_state_values: torch.Tensor = v_net(*prev_states).squeeze()
+                # Delta is the difference between the 1 step bootstrap (reward +
+                # value prediction of next state) and the value prediction of
+                # the current state
+                delta = (
+                    rewards + discount * inv_dones * state_values - prev_state_values
+                )
+                state_values = prev_state_values
+                step_advantages = (
+                    delta
+                    + discount * lambda_ * inv_dones * step_advantages * inv_truncs
+                )
+                step_returns = state_values + step_advantages
+                advantages[i] = step_advantages
+                returns[i] = step_returns
+
+            # Permute transitions to decorrelate them
+            exp_count = self.num_envs * self.num_steps
+            indices = torch.randperm(exp_count, dtype=torch.int, device=d)
+            rand_prev_states = [states.flatten(0, 1).index_select(0, indices) for states in [self.states, other.states]]
+            rand_actions = self.actions.flatten(0, 1).index_select(0, indices)
+            rand_action_probs = self.action_probs.flatten(0, 1).index_select(0, indices)
+            rand_masks = self.masks.flatten(0, 1).index_select(0, indices)
+            rand_returns = returns.flatten(0, 1).index_select(0, indices)
+            rand_advantages = advantages.flatten(0, 1).index_select(0, indices)
+            batch_count = exp_count // batch_size
+            batches = []
+            for i in range(batch_count):
+                start = i * batch_size
+                end = (i + 1) * batch_size
+                batches.append(
+                    (
+                        [rand_prev_state[start:end].reshape(
+                            [batch_size] + list(state.shape)[2:]
+                        ) for rand_prev_state, state in zip(rand_prev_states, [self.states, other.states])],
                         rand_actions[start:end].reshape(
                             [batch_size] + list(self.actions.shape)[2:]
                         ),

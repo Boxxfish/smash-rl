@@ -360,7 +360,7 @@ for step in tqdm(range(iterations), position=0):
                                     1.0 + 10.0 ** ((current_elo - b_elo) / 400.0)
                                 )
                                 current_elo = current_elo + elo_k * (a - ea)
-                                bot_data[i]["elo"] = int(b_elo + elo_k * (a - ea))
+                                bot_data[i]["elo"] = int(b_elo + elo_k * (b - eb))
                                 (obs_1_, obs_2_), info = test_env.reset()
                                 eval_obs_1 = torch.from_numpy(np.array(obs_1_)).float()
                                 eval_obs_2 = torch.from_numpy(np.array(obs_2_)).float()
