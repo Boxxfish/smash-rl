@@ -1,5 +1,6 @@
 from typing import List
 
+def test_jit() -> None: ...
 
 class MoveState:
     Idle: int

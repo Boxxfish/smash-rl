@@ -26,3 +26,4 @@ bevy = { version = "0.10.0", features = ["wayland"] }
 bevy_rapier2d = { version = "0.21.0", features = ["simd-nightly", "debug-render-2d"] }
 bevy_save = "0.8.0"
 rmp-serde = "1.1.1"
+tch = "0.13.0"

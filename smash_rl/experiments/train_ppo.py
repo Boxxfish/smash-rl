@@ -5,7 +5,8 @@ from argparse import ArgumentParser
 import copy
 from functools import reduce
 import random
-from typing import Any, Mapping
+import time
+from typing import Any, Mapping, Union
 import gymnasium as gym
 from gymnasium.vector import SyncVectorEnv
 import numpy as np
@@ -22,6 +23,7 @@ from smash_rl.algorithms.rollout_buffer import RolloutBuffer, StateRolloutBuffer
 from smash_rl.conf import entity
 from smash_rl.micro_fighter.env import MFEnv
 from smash_rl.utils import init_orthogonal
+from smash_rl_rust import test_jit
 
 _: Any
 
@@ -52,6 +54,7 @@ device = torch.device("cuda")  # Device to use during training.
 parser = ArgumentParser()
 parser.add_argument("--eval", action="store_true")
 parser.add_argument("--generate", action="store", default=None)
+parser.add_argument("--trace", action="store_true")
 args = parser.parse_args()
 
 
@@ -151,10 +154,40 @@ test_env = TimeLimit(
     MFEnv(max_skip_frames=max_skip_frames, num_frames=num_frames), max_eval_steps
 )
 
+# If tracing, trace and load from Rust
+if args.trace:
+    obs_space = env.single_observation_space
+    act_space = env.single_action_space
+    assert isinstance(obs_space, gym.spaces.Tuple)
+    assert isinstance(obs_space.spaces[0], gym.spaces.Box)
+    assert isinstance(obs_space.spaces[1], gym.spaces.Box)
+    spatial_obs_space = obs_space.spaces[0]
+    stats_obs_space = obs_space.spaces[1]
+    assert isinstance(act_space, gym.spaces.Discrete)
+    
+    # Compile policy network
+    curr_time = time.time()
+    p_net = PolicyNet(
+        torch.Size(spatial_obs_space.shape), stats_obs_space.shape[0], int(act_space.n)
+    )
+    p_net.eval()
+    sample_input = obs_space.sample()
+    traced = torch.jit.trace(p_net, (torch.from_numpy(sample_input[0]).unsqueeze(0), torch.from_numpy(sample_input[1]).unsqueeze(0)))
+    traced.save("temp/training/p_net_test.ptc")
+
+    # Load from Rust
+    test_jit()
+
+    # Check elapsed time
+    elapsed = time.time() - curr_time
+    print("Elapsed time (seconds):", elapsed)
+    quit()
+
 # If generating, save trajectories
 if args.generate:
     gen_count = args.generate
-    eval_done = False
+    max_per_part = 512
+
     obs_space = env.single_observation_space
     act_space = env.single_action_space
     assert isinstance(obs_space, gym.spaces.Tuple)
@@ -176,12 +209,31 @@ if args.generate:
         ),
         100_000,
     )
+
+    # Allocate key and data arrays
+    keys_spatial = []
+    keys_stats = []
+    data_spatial = []
+    data_scalar = []
+    episode_data: dict[str, Any] = {}
+    episode_id = 0
+    traj_in_episode = []
+    part_id = 0
     with torch.no_grad():
         (obs_1_, obs_2_), _ = test_env.reset()
         eval_obs_1 = torch.from_numpy(np.array(obs_1_)).float()
         eval_obs_2 = torch.from_numpy(np.array(obs_2_)).float()
-        for _ in tqdm(range(gen_count)):
-            for _ in range(10):
+        for j in tqdm(range(gen_count)):
+            traj_in_episode.append(j)
+
+            # Store info for key
+            keys_spatial.append(eval_obs_1.numpy())
+            keys_stats.append(eval_obs_2.numpy())
+            traj_len = 10
+            traj_data_spatial = np.zeros([traj_len] + list(eval_obs_1.shape))
+            traj_data_scalar = np.zeros([traj_len] + [eval_obs_2.shape[0] + int(act_space.n)])
+
+            for i in range(traj_len):
                 bot_obs_1, bot_obs_2 = test_env.bot_obs()
                 bot_action_probs = p_net(
                     torch.from_numpy(bot_obs_1).unsqueeze(0).float(),
@@ -204,6 +256,12 @@ if args.generate:
                     eval_info,
                 ) = test_env.step(action)
 
+                # Save trajectory data
+                traj_data_spatial[i] = obs_1_
+                act_tensor = np.zeros([int(act_space.n)])
+                act_tensor[int(action)] = 1
+                traj_data_scalar[i] = np.concatenate([obs_2_, act_tensor])
+
                 test_env.render()
                 eval_obs_1 = torch.from_numpy(np.array(obs_1_)).float()
                 eval_obs_2 = torch.from_numpy(np.array(obs_2_)).float()
@@ -211,7 +269,49 @@ if args.generate:
                     (obs_1_, obs_2_), _ = test_env.reset()
                     eval_obs_1 = torch.from_numpy(np.array(obs_1_)).float()
                     eval_obs_2 = torch.from_numpy(np.array(obs_2_)).float()
+                    
+                    # Save episode data
+                    round_result = 0
+                    if eval_done:
+                        if eval_info["player_won"]:
+                            round_result = 1
+                        else:
+                            round_result = -1
+                    else:
+                        round_result = 0
+                    episode_data["player_won"] = round_result
+                    episode_data["traj_in_episode"] = traj_in_episode
+                    traj_in_episode = []
+                    episode_id += 1
+                    
                     break
+
+            # Add trajectory data
+            data_spatial.append(traj_data_spatial)
+            data_scalar.append(traj_data_scalar)
+
+            # If max number of trajectories have been saved, save to disk
+            if len(keys_spatial) == max_per_part:
+                np.save(f"temp/generated/{part_id}_keys_spatial.npy", np.stack(keys_spatial))
+                np.save(f"temp/generated/{part_id}_keys_stats.npy", np.stack(keys_stats))
+                np.save(f"temp/generated/{part_id}_data_spatial.npy", np.stack(data_spatial))
+                np.save(f"temp/generated/{part_id}_data_scalar.npy", np.stack(data_scalar))
+                keys_spatial = []
+                keys_stats = []
+                data_spatial = []
+                data_scalar = []
+                part_id += 1
+
+        # One final save
+        np.save(f"temp/generated/{part_id}_keys_spatial.npy", np.stack(keys_spatial))
+        np.save(f"temp/generated/{part_id}_keys_stats.npy", np.stack(keys_stats))
+        np.save(f"temp/generated/{part_id}_data_spatial.npy", np.stack(data_spatial))
+        np.save(f"temp/generated/{part_id}_data_scalar.npy", np.stack(data_scalar))
+        keys_spatial = []
+        keys_stats = []
+        data_spatial = []
+        data_scalar = []
+        part_id += 1
 
 # If evaluating, load the latest policy
 if args.eval:
