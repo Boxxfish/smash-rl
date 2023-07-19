@@ -37,9 +37,11 @@ class StepOutput:
     player_damage: int
     player_state: int
     player_dir: int
+    player_pos: tuple[int, int]
     opponent_damage: int
     opponent_state: int
     opponent_dir: int
+    opponent_pos: tuple[int, int]
     net_damage: int
 
 class GameState:

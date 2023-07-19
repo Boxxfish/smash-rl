@@ -106,6 +106,7 @@ class MFEnv(gym.Env):
         self.render_mode = render_mode
         self.num_frames = num_frames
         self.dmg_reward_amount = 1.0
+        self.last_dist = 0.0
         self.player_frame_stack = [
             np.zeros([self.num_channels, IMG_SIZE, IMG_SIZE])
             for _ in range(self.num_frames)
@@ -159,7 +160,12 @@ class MFEnv(gym.Env):
         round_reward = 0.0
         if terminated:
             round_reward = 1.0 if step_output.player_won else -1.0
-        dmg_reward = dmg_reward / 10
+
+        curr_dist = step_output.player_pos[0]**2 / 200**2
+        delta_dist = (curr_dist - self.last_dist)
+        self.last_dist = curr_dist
+
+        dmg_reward = dmg_reward / 10 - delta_dist
 
         reward = dmg_reward * (self.dmg_reward_amount) + round_reward
 
@@ -196,6 +202,8 @@ class MFEnv(gym.Env):
         self.bot_stats[17] = step_output.opponent_dir
         stats_obs = np.concatenate([self.player_stats, self.bot_stats])
         
+        self.last_dist = step_output.player_pos[0]**2 / 200**2
+
         return (np.stack(self.player_frame_stack), stats_obs), {}
 
     def gen_channels(

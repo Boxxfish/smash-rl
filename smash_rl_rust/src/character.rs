@@ -188,7 +188,7 @@ impl Default for CharAttrs {
     fn default() -> Self {
         Self {
             jump_height: 150,
-            run_speed: 200,
+            run_speed: 400,
             size: 30,
             light_size: 12,
             light_dist: 12,

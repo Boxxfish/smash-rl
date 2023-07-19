@@ -183,11 +183,6 @@ fn compute_hit_interactions(
                 continue;
             }
 
-            // If the character is already in hitstun, skip
-            if hitstun_query.contains(char_e) {
-                continue;
-            }
-
             // Compute normal hit
             if hit.hit_type == HitType::Normal && !character.shielding {
                 // Apply the appropriate amount of impulse
@@ -199,6 +194,10 @@ fn compute_hit_interactions(
                 commands
                     .get_entity(char_e)
                     .unwrap()
+                    .insert(Velocity {
+                        linvel: Vec2::ZERO,
+                        ..default()
+                    })
                     .insert(ExternalImpulse {
                         impulse,
                         ..default()
@@ -206,6 +205,10 @@ fn compute_hit_interactions(
                     .insert(Hitstun {
                         frames: hitstun_frames,
                     });
+            }
+            else if character.shielding {
+                // Apply reduced damage.
+                character.damage += (hit.damage as f32 / 3.0).ceil() as u32;
             }
 
             // Compute grab

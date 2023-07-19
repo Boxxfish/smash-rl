@@ -80,6 +80,9 @@ pub struct StepOutput {
     /// Direction the player is facing.
     #[pyo3(get)]
     pub player_dir: i32,
+    /// Position of the player.
+    #[pyo3(get)]
+    pub player_pos: (i32, i32),
     /// Damage the opponent is at.
     #[pyo3(get)]
     pub opponent_damage: u32,
@@ -89,6 +92,9 @@ pub struct StepOutput {
     /// Direction the opponent is facing.
     #[pyo3(get)]
     pub opponent_dir: i32,
+    /// Position of the opponent.
+    #[pyo3(get)]
+    pub opponent_pos: (i32, i32),
 }
 
 /// Simple fighting game.
@@ -190,8 +196,8 @@ impl MicroFighter {
             (false, false)
         };
 
-        let (p_char, p_state) = world
-            .query_filtered::<(&Character, &CurrentMoveState), With<Player>>()
+        let (p_char, p_state, p_xform) = world
+            .query_filtered::<(&Character, &CurrentMoveState, &Transform), With<Player>>()
             .single(world);
         let player_damage = p_char.damage;
         let player_state = p_state.move_state;
@@ -199,9 +205,10 @@ impl MicroFighter {
             HorizontalDir::Left => -1,
             HorizontalDir::Right => 1,
         };
+        let player_pos = (p_xform.translation.x as i32, p_xform.translation.y as i32);
 
-        let (b_char, b_state) = world
-            .query_filtered::<(&Character, &CurrentMoveState), With<Bot>>()
+        let (b_char, b_state, b_xform) = world
+            .query_filtered::<(&Character, &CurrentMoveState, &Transform), With<Bot>>()
             .single(world);
         let opponent_damage = b_char.damage;
         let opponent_state = b_state.move_state;
@@ -209,6 +216,7 @@ impl MicroFighter {
             HorizontalDir::Left => -1,
             HorizontalDir::Right => 1,
         };
+        let opponent_pos = (b_xform.translation.x as i32, b_xform.translation.y as i32);
 
         let hbox_coll = world.get_resource::<HBoxCollection>().unwrap();
         let net_dmg = world.get_resource::<NetDamage>().unwrap();
@@ -221,8 +229,10 @@ impl MicroFighter {
             player_state,
             opponent_damage,
             opponent_state,
-            player_dir,
             opponent_dir,
+            player_dir,
+            opponent_pos,
+            player_pos,
         }
     }
 
