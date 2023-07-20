@@ -235,7 +235,7 @@ class MFEnv(gym.Env):
                 [[math.cos(rot), -math.sin(rot)], [math.sin(rot), math.cos(rot)]]
             )
             # Offset points by x and y
-            points = points + np.array([[hbox.x + hbox.w / 2, hbox.y - hbox.y / 2]])
+            points = points + np.array([[hbox.x + hbox.w / 2, hbox.y + hbox.h / 2]])
             # Convert to image space
             points = (points + self.game.get_screen_size() / 2) * (
                 IMG_SIZE / self.game.get_screen_size()

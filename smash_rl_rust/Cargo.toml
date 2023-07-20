@@ -10,8 +10,12 @@ path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]
 
 [[bin]]
-name = "smash_rl_rust_bin"
+name = "run"
 path = "src/binaries/run.rs"
+
+[[bin]]
+name = "run_env"
+path = "src/binaries/run_env.rs"
 
 [profile.dev]
 opt-level=1
@@ -27,3 +31,4 @@ bevy_rapier2d = { version = "0.21.0", features = ["simd-nightly", "debug-render-
 bevy_save = "0.8.0"
 rmp-serde = "1.1.1"
 tch = "0.13.0"
+buffer-graphics-lib = "0.11.4"

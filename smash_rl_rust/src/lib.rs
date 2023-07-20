@@ -1,4 +1,5 @@
 pub mod micro_fighter;
+pub mod env;
 mod move_states;
 mod character;
 mod hit;

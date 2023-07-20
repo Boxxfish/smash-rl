@@ -24,6 +24,7 @@ def train_ppo(
     epsilon: float,
     gradient_steps: int = 1,
     use_masks: bool = False,
+    entropy_coeff: float = 0.001
 ) -> Tuple[float, float]:
     """
     Performs the PPO training loop. Returns a tuple of total policy loss and
@@ -71,12 +72,14 @@ def train_ppo(
                 new_log_probs = p_net(prev_states_1, prev_states_2, action_masks)
             else:
                 new_log_probs = p_net(prev_states_1, prev_states_2)
-            new_act_probs = Categorical(logits=new_log_probs).log_prob(
+            new_act_distr = Categorical(logits=new_log_probs)
+            new_act_probs = new_act_distr.log_prob(
                 actions.squeeze()
             )
+            entropy = new_act_distr.entropy().mean()
             term1 = (new_act_probs - old_act_probs).exp() * advantages
             term2 = (1.0 + epsilon * advantages.sign()) * advantages
-            p_loss = -term1.min(term2).mean() / gradient_steps
+            p_loss = (-(term1.min(term2).mean() + entropy * entropy_coeff)) / gradient_steps
             p_loss.backward()
             total_p_loss += p_loss.item()
 

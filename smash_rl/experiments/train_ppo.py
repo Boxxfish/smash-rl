@@ -411,7 +411,6 @@ p_opt = torch.optim.Adam(p_net.parameters(), lr=p_lr)
 bot_data = [{"state_dict": p_net.state_dict(), "elo": start_elo}]
 bot_nets = [copy.deepcopy(p_net)]
 bot_p_indices = [0 for _ in range(num_envs)]
-random_bot = [True for _ in range(num_envs)]
 current_elo = start_elo
 
 buffer_spatial = RolloutBuffer(
@@ -444,15 +443,12 @@ for step in tqdm(range(iterations), position=0):
             for env_index, env_ in enumerate(env.envs):
                 assert isinstance(env_, TimeLimit)
                 assert isinstance(env_.env, MFEnv)
-                if random_bot[env_index]:
-                    bot_action = act_space.sample()
-                else:
-                    bot_obs_1, bot_obs_2 = env_.env.bot_obs()
-                    bot_action_probs = bot_nets[bot_p_indices[env_index]](
-                        torch.from_numpy(bot_obs_1).float().unsqueeze(0),
-                        torch.from_numpy(bot_obs_2).float().unsqueeze(0),
-                    ).squeeze(0)
-                    bot_action = Categorical(logits=bot_action_probs).sample().item()
+                bot_obs_1, bot_obs_2 = env_.env.bot_obs()
+                bot_action_probs = bot_nets[bot_p_indices[env_index]](
+                    torch.from_numpy(bot_obs_1).float().unsqueeze(0),
+                    torch.from_numpy(bot_obs_2).float().unsqueeze(0),
+                ).squeeze(0)
+                bot_action = Categorical(logits=bot_action_probs).sample().item()
                 env_.env.bot_step(bot_action)
 
             # Choose player action
@@ -482,14 +478,10 @@ for step in tqdm(range(iterations), position=0):
                     assert isinstance(env_, TimeLimit)
                     assert isinstance(env_.env, MFEnv)
                     if dones[env_index] or truncs[env_index]:
-                        if random.random() < 0.1:
-                            random_bot[env_index] = True
-                        else:
-                            random_bot[env_index] = False
-                            state_dict = random.choice(bot_data)["state_dict"]
-                            assert isinstance(state_dict, Mapping)
-                            bot_p_indices[env_index] = random.randrange(0, len(bot_data))
-                            bot_nets[bot_p_indices[env_index]].load_state_dict(state_dict)
+                        state_dict = random.choice(bot_data)["state_dict"]
+                        assert isinstance(state_dict, Mapping)
+                        bot_p_indices[env_index] = random.randrange(0, len(bot_data))
+                        bot_nets[bot_p_indices[env_index]].load_state_dict(state_dict)
 
 
             except KeyboardInterrupt:
@@ -516,6 +508,7 @@ for step in tqdm(range(iterations), position=0):
         discount,
         lambda_,
         epsilon,
+        entropy_coeff=0.0001,
     )
     buffer_spatial.clear()
     buffer_stats.clear()
