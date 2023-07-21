@@ -185,10 +185,10 @@ pub struct WorkerContext {
 }
 
 impl WorkerContext {
-    pub fn new(num_envs: usize, num_steps: u32, max_skip_frames: u32, num_frames: u32) -> Self {
+    pub fn new(num_envs: usize, num_steps: u32, max_skip_frames: u32, num_frames: u32, time_limit: u32) -> Self {
         let mut env = VecEnv::new(
             (0..num_envs)
-                .map(|_| MFEnv::new(max_skip_frames, num_frames, false, (0, 0, 0)))
+                .map(|_| MFEnv::new(max_skip_frames, num_frames, false, (0, 0, 0), time_limit))
                 .collect(),
         );
         let (last_obs_1, last_obs_2) = env.reset();
@@ -226,6 +226,7 @@ pub struct RolloutContext {
 #[pymethods]
 impl RolloutContext {
     #[new]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         total_num_envs: usize,
         num_workers: usize,
@@ -233,11 +234,12 @@ impl RolloutContext {
         num_steps: u32,
         max_skip_frames: u32,
         num_frames: u32,
+        time_limit: u32,
         first_bot_path: &str,
     ) -> Self {
         let envs_per_worker = total_num_envs / num_workers;
         let w_ctxs = (0..num_workers)
-            .map(|_| WorkerContext::new(envs_per_worker, num_steps, max_skip_frames, num_frames))
+            .map(|_| WorkerContext::new(envs_per_worker, num_steps, max_skip_frames, num_frames, time_limit))
             .collect();
         let bot_nets = vec![tch::CModule::load(first_bot_path).expect("Couldn't load module.")];
         Self {

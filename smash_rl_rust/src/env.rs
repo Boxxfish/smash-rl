@@ -34,6 +34,8 @@ pub struct MFEnv {
     pub num_channels: u32,
     // pub render_state: Option<RenderState>,
     pub view_channels: (u32, u32, u32),
+    pub time_limit: u32,
+    pub current_time: u32,
 }
 
 pub struct MFEnvInfo {
@@ -46,6 +48,7 @@ impl MFEnv {
         num_frames: u32,
         rendering: bool,
         view_channels: (u32, u32, u32),
+        time_limit: u32
     ) -> Self {
         let options = (tch::Kind::Float, tch::Device::Cpu);
         let game = MicroFighter::new(false);
@@ -94,6 +97,7 @@ impl MFEnv {
         } else {
             None
         };
+        let current_time = 0;
         Self {
             game,
             observation_space,
@@ -109,6 +113,8 @@ impl MFEnv {
             num_channels,
             // render_state,
             view_channels,
+            time_limit,
+            current_time,
         }
     }
 
@@ -170,11 +176,15 @@ impl MFEnv {
 
         let reward = dmg_reward * (self.dmg_reward_amount) + round_reward;
 
+        // Account for time limit
+        self.current_time += 1;
+        let truncated = self.current_time >= self.time_limit;
+
         (
             (Tensor::stack(&self.player_frame_stack, 0), stats_obs),
             reward,
             terminated,
-            false,
+            truncated,
             MFEnvInfo {
                 player_won: step_output.player_won,
             },
