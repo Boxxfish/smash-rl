@@ -1,5 +1,7 @@
 use pyo3::prelude::*;
-use tch::Tensor;
+use rand::Rng;
+use tch::{nn::Module, Tensor};
+use weighted_rand::builder::{WalkerTableBuilder, NewBuilder};
 
 use crate::env::{MFEnv, MFEnvInfo};
 
@@ -98,7 +100,7 @@ impl RolloutBuffer {
         self.next += 1;
     }
 
-    pub fn insert_final_step(self, states_1: &Tensor, states_2: &Tensor) {
+    pub fn insert_final_step(&mut self, states_1: &Tensor, states_2: &Tensor) {
         let _guard = tch::no_grad_guard();
         self.states_1.get(self.next).copy_(states_1);
         self.states_2.get(self.next).copy_(states_2);
@@ -138,12 +140,20 @@ impl VecEnv {
 
         for (i, action) in actions.iter().enumerate() {
             let ((obs_1, obs_2), reward, done, trunc, info) = self.envs[i].step(*action);
-            obs_1_vec.push(obs_1);
-            obs_2_vec.push(obs_2);
             rewards.push(reward);
             dones.push(done);
             truncs.push(trunc);
             infos.push(info);
+
+            // Reset if done or truncated
+            if done || trunc {
+                let ((obs_1, obs_2), _) = self.envs[i].reset();
+                obs_1_vec.push(obs_1);
+                obs_2_vec.push(obs_2);
+            } else {
+                obs_1_vec.push(obs_1);
+                obs_2_vec.push(obs_2);
+            }
         }
 
         let observations = (Tensor::stack(&obs_1_vec, 0), Tensor::stack(&obs_2_vec, 0));
@@ -160,25 +170,21 @@ impl VecEnv {
             obs_2_vec.push(obs_2);
         }
 
-        
         (Tensor::stack(&obs_1_vec, 0), Tensor::stack(&obs_2_vec, 0))
-
     }
 }
 
 /// Stores worker state between iterations.
-#[pyclass]
 pub struct WorkerContext {
     last_obs_1: Tensor,
     last_obs_2: Tensor,
     rollout_buffer: RolloutBuffer,
     env: VecEnv,
     bot_ids: Vec<usize>,
+    num_steps: u32,
 }
 
-#[pymethods]
 impl WorkerContext {
-    #[new]
     pub fn new(num_envs: usize, num_steps: u32, max_skip_frames: u32, num_frames: u32) -> Self {
         let mut env = VecEnv::new(
             (0..num_envs)
@@ -188,7 +194,15 @@ impl WorkerContext {
         let (last_obs_1, last_obs_2) = env.reset();
         let (state_shape_1, state_shape_2) = env.envs[0].observation_space;
         let action_count = env.envs[0].action_space as i64;
-        let rollout_buffer = RolloutBuffer::new(&state_shape_1, &state_shape_2, &[1], &[action_count], tch::Kind::Int, num_envs as u32, num_steps);
+        let rollout_buffer = RolloutBuffer::new(
+            &state_shape_1,
+            &state_shape_2,
+            &[1],
+            &[action_count],
+            tch::Kind::Int,
+            num_envs as u32,
+            num_steps,
+        );
         let bot_ids = vec![0; num_envs];
         Self {
             last_obs_1,
@@ -196,6 +210,145 @@ impl WorkerContext {
             rollout_buffer,
             env,
             bot_ids,
+            num_steps,
         }
     }
+}
+
+/// Stores data required for the entire rollout process.
+#[pyclass]
+pub struct RolloutContext {
+    w_ctxs: Vec<WorkerContext>,
+    max_num_bots: usize,
+    bot_nets: Vec<tch::CModule>,
+}
+
+#[pymethods]
+impl RolloutContext {
+    #[new]
+    pub fn new(
+        total_num_envs: usize,
+        num_workers: usize,
+        max_num_bots: usize,
+        num_steps: u32,
+        max_skip_frames: u32,
+        num_frames: u32,
+        first_bot_path: &str,
+    ) -> Self {
+        let envs_per_worker = total_num_envs / num_workers;
+        let w_ctxs = (0..num_workers)
+            .map(|_| WorkerContext::new(envs_per_worker, num_steps, max_skip_frames, num_frames))
+            .collect();
+        let bot_nets = vec![tch::CModule::load(first_bot_path).expect("Couldn't load module.")];
+        Self {
+            w_ctxs,
+            max_num_bots,
+            bot_nets,
+        }
+    }
+
+    /// Performs one iteration of the rollout process.
+    /// Returns entropy.
+    pub fn rollout(&mut self, latest_policy_path: &str) -> f32 {
+        let _guard = tch::no_grad_guard();
+        let p_net = tch::CModule::load(latest_policy_path).expect("Couldn't load module.");
+        let mut rng = rand::thread_rng();
+
+        let mut total_entropy = 0.0;
+        for w_ctx in &mut self.w_ctxs {
+            let mut obs_1 = w_ctx.last_obs_1.copy();
+            let mut obs_2 = w_ctx.last_obs_2.copy();
+            for _ in 0..w_ctx.num_steps {
+                // Choose bot action
+                for (env_index, env_) in w_ctx.env.envs.iter_mut().enumerate() {
+                    let (bot_obs_1, bot_obs_2) = env_.bot_obs();
+                    let bot_action_probs = self.bot_nets[w_ctx.bot_ids[env_index]]
+                        .forward_ts(&[bot_obs_1.unsqueeze(0), bot_obs_2.unsqueeze(0)])
+                        .unwrap()
+                        .squeeze();
+                    let bot_action = sample(&bot_action_probs)[0];
+                    env_.bot_step(bot_action);
+                }
+
+                // Choose player action
+                let action_probs = p_net.forward_ts(&[&obs_1, &obs_2]).unwrap();
+                let actions = sample(&action_probs);
+
+                // Compute entropy.
+                // Based on the official Torch Distributions source.
+                let logits = action_probs.clamp(f64::MIN, f64::MAX);
+                let probs = action_probs.softmax(-1, tch::Kind::Float);
+                let p_log_p = logits * probs;
+                let entropy = -p_log_p.sum_dim_intlist(-1, false, tch::Kind::Float);
+                total_entropy += entropy.mean(tch::Kind::Float).double_value(&[0]);
+
+                let ((obs_1_, obs_2_), rewards, dones, truncs, _) = w_ctx.env.step(&actions);
+                obs_1 = obs_1_;
+                obs_2 = obs_2_;
+                w_ctx.rollout_buffer.insert_step(
+                    &obs_1,
+                    &obs_2,
+                    &Tensor::from_slice(&actions.iter().map(|a| *a as i64).collect::<Vec<_>>()).unsqueeze(1),
+                    &action_probs,
+                    &rewards,
+                    &dones,
+                    &truncs,
+                );
+
+                // Change opponent when environment ends
+                for (env_index, env_) in w_ctx.env.envs.iter().enumerate() {
+                    if dones[env_index] || truncs[env_index] {
+                        w_ctx.bot_ids[env_index] = rng.gen_range(0..self.bot_nets.len());
+                    }
+                }
+            }
+
+            w_ctx.rollout_buffer.insert_final_step(&obs_1, &obs_2);
+            w_ctx.last_obs_1 = obs_1;
+            w_ctx.last_obs_2 = obs_2;
+        }
+
+        total_entropy as f32 / self.w_ctxs.len() as f32
+    }
+
+    /// Appends a new bot.
+    pub fn push_bot(&mut self, path: &str) {
+        let bot_net = tch::CModule::load(path).expect("Couldn't load module.");
+        self.bot_nets.push(bot_net);
+    }
+
+    /// Inserts a new bot at the given position.
+    pub fn insert_bot(&mut self, path: &str, index: usize) {
+        let bot_net = tch::CModule::load(path).expect("Couldn't load module.");
+        self.bot_nets[index] = bot_net;
+    }
+
+    /// Sets the exploration reward amount.
+    pub fn set_expl_reward_amount(&mut self, amount: f32) {
+        for w_ctx in &mut self.w_ctxs {
+            for env in &mut w_ctx.env.envs {
+                env.set_dmg_reward_amount(amount);
+            }
+        }
+    }
+}
+
+/// Returns a list of actions given the probabilities.
+fn sample(logits: &Tensor) -> Vec<u32> {
+    let num_samples = logits.size()[0];
+    let num_weights = logits.size()[1] as usize;
+    let mut generated_samples = Vec::with_capacity(num_samples as usize);
+    let mut rng = rand::thread_rng();
+    let probs = logits.softmax(-1, tch::Kind::Float);
+
+    for i in 0..num_samples {
+        let mut weights = vec![0.0; num_weights];
+        probs.get(i).copy_data(&mut weights, num_weights);
+        let builder = WalkerTableBuilder::new(&weights);
+        let table = builder.build();
+        let action = table.next_rng(&mut rng);
+        generated_samples.push(action as u32);
+    }
+
+    generated_samples
 }

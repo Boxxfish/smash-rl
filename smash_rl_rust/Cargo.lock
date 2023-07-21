@@ -3609,6 +3609,7 @@ dependencies = [
  "rand",
  "rmp-serde",
  "tch",
+ "weighted_rand",
 ]
 
 [[package]]
@@ -4180,6 +4181,16 @@ checksum = "3bdd9ef4e984da1187bf8110c5cf5b845fbc87a23602cdf912386a76fcd3a7c2"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "weighted_rand"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "431a4e6cbb8f34b78dbcc1d9c86a47be5dce6f3b991d7a8cd250dfdede1ee7b7"
+dependencies = [
+ "rand",
+ "serde",
 ]
 
 [[package]]
