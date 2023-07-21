@@ -4,6 +4,7 @@ use minifb::{Window, WindowOptions};
 use tch::Tensor;
 
 const IMG_SIZE: u32 = 64;
+const SCALE: usize = 8;
 
 fn insert_obs(obs: Tensor, frame_stack: &mut [Tensor]) {
     for i in (1..frame_stack.len()).rev() {
@@ -66,7 +67,7 @@ impl MFEnv {
         let player_frame_stack = (0..num_frames)
             .map(|_| {
                 Tensor::zeros(
-                    &[num_channels as i64, IMG_SIZE as i64, IMG_SIZE as i64],
+                    [num_channels as i64, IMG_SIZE as i64, IMG_SIZE as i64],
                     options,
                 )
             })
@@ -74,7 +75,7 @@ impl MFEnv {
         let bot_frame_stack = (0..num_frames)
             .map(|_| {
                 Tensor::zeros(
-                    &[num_channels as i64, IMG_SIZE as i64, IMG_SIZE as i64],
+                    [num_channels as i64, IMG_SIZE as i64, IMG_SIZE as i64],
                     options,
                 )
             })
@@ -84,8 +85,8 @@ impl MFEnv {
                 buffer: vec![0; (IMG_SIZE * IMG_SIZE) as usize],
                 window: Window::new(
                     "MFEnv - AI View",
-                    IMG_SIZE as usize,
-                    IMG_SIZE as usize,
+                    IMG_SIZE as usize * SCALE,
+                    IMG_SIZE as usize * SCALE,
                     WindowOptions::default(),
                 )
                 .expect("Couldn't create window"),
@@ -112,6 +113,7 @@ impl MFEnv {
     }
 
     pub fn step(&mut self, action: u32) -> ((Tensor, Tensor), f32, bool, bool, MFEnvInfo) {
+        let _guard = tch::no_grad_guard();
         let options = (tch::Kind::Float, tch::Device::Cpu);
         let skip_frames = self.max_skip_frames;
         let step_output = self.game.step(action);
@@ -132,7 +134,7 @@ impl MFEnv {
 
         // Stats observation
         self.player_stats = Tensor::zeros([18], options);
-        let one = Tensor::ones(&[1], options);
+        let one = Tensor::ones([1], options);
         self.player_stats
             .get(step_output.player_state as i64)
             .set_data(&one);
@@ -180,12 +182,13 @@ impl MFEnv {
     }
 
     pub fn reset(&mut self) -> ((Tensor, Tensor), MFEnvInfo) {
+        let _guard = tch::no_grad_guard();
         let options = (tch::Kind::Float, tch::Device::Cpu);
         let step_output = self.game.reset();
         self.player_frame_stack = (0..self.num_frames)
             .map(|_| {
                 Tensor::zeros(
-                    &[self.num_channels as i64, IMG_SIZE as i64, IMG_SIZE as i64],
+                    [self.num_channels as i64, IMG_SIZE as i64, IMG_SIZE as i64],
                     options,
                 )
             })
@@ -193,7 +196,7 @@ impl MFEnv {
         self.bot_frame_stack = (0..self.num_frames)
             .map(|_| {
                 Tensor::zeros(
-                    &[self.num_channels as i64, IMG_SIZE as i64, IMG_SIZE as i64],
+                    [self.num_channels as i64, IMG_SIZE as i64, IMG_SIZE as i64],
                     options,
                 )
             })
@@ -204,7 +207,7 @@ impl MFEnv {
         insert_obs(Tensor::stack(&bot_channels, 0), &mut self.bot_frame_stack);
 
         self.player_stats = Tensor::zeros([18], options);
-        let one = Tensor::ones(&[1], options);
+        let one = Tensor::ones([1], options);
         self.player_stats
             .get(step_output.player_state as i64)
             .set_data(&one);
@@ -237,15 +240,15 @@ impl MFEnv {
     fn gen_channels(&self, step_output: &StepOutput, is_player: bool) -> Vec<Tensor> {
         let options = (tch::Kind::Float, tch::Device::Cpu);
         let hboxes = &step_output.hboxes;
-        let mut hit_channel = Tensor::zeros(&[IMG_SIZE as i64, IMG_SIZE as i64], options);
-        let mut dmg_channel = Tensor::zeros(&[IMG_SIZE as i64, IMG_SIZE as i64], options);
-        let mut player_channel = Tensor::zeros(&[IMG_SIZE as i64, IMG_SIZE as i64], options);
-        let mut box_channel = Tensor::zeros(&[IMG_SIZE as i64, IMG_SIZE as i64], options);
+        let mut hit_channel = Tensor::zeros([IMG_SIZE as i64, IMG_SIZE as i64], options);
+        let mut dmg_channel = Tensor::zeros([IMG_SIZE as i64, IMG_SIZE as i64], options);
+        let mut player_channel = Tensor::zeros([IMG_SIZE as i64, IMG_SIZE as i64], options);
+        let mut box_channel = Tensor::zeros([IMG_SIZE as i64, IMG_SIZE as i64], options);
         for hbox in hboxes {
             let mut buffer: [u8; (IMG_SIZE * IMG_SIZE * 4) as usize] =
                 [0; (IMG_SIZE * IMG_SIZE * 4) as usize];
-            let mut graphics = Graphics::new(&mut buffer, 800, 600).unwrap();
-            let rot = -hbox.angle;
+            let mut graphics = Graphics::new(&mut buffer, IMG_SIZE as usize, IMG_SIZE as usize).unwrap();
+            let rot = hbox.angle;
             // Rotate points around center and offset, then convert to integral image space
             let points = [
                 [-(hbox.w as i32) / 2, hbox.h as i32 / 2],
@@ -290,17 +293,23 @@ impl MFEnv {
     pub fn render(&mut self) {
         if let Some(render_state) = &mut self.render_state {
             let channels = &self.player_frame_stack[0];
-            let r = channels.get(self.view_channels.0 as i64);
-            let g = channels.get(self.view_channels.1 as i64);
-            let b = channels.get(self.view_channels.2 as i64);
+            let r = channels.get(self.view_channels.0 as i64).flip([0]) * 255.0;
+            let g = channels.get(self.view_channels.1 as i64).flip([0]) * 255.0;
+            let b = channels.get(self.view_channels.2 as i64).flip([0]) * 255.0;
             let window = &mut render_state.window;
+            let mut r_buf = vec![0.0_f32; (IMG_SIZE * IMG_SIZE) as usize];
+            let mut g_buf = vec![0.0_f32; (IMG_SIZE * IMG_SIZE) as usize];
+            let mut b_buf = vec![0.0_f32; (IMG_SIZE * IMG_SIZE) as usize];
+            r.copy_data(&mut r_buf, (IMG_SIZE * IMG_SIZE) as usize);
+            g.copy_data(&mut g_buf, (IMG_SIZE * IMG_SIZE) as usize);
+            b.copy_data(&mut b_buf, (IMG_SIZE * IMG_SIZE) as usize);
             for y in 0..IMG_SIZE {
                 for x in 0..IMG_SIZE {
                     let index = (y * IMG_SIZE + x) as usize;
-                    let r = (r.double_value(&[y as i64, x as i64]) * 255.0) as u32;
-                    let g = (g.double_value(&[y as i64, x as i64]) * 255.0) as u32;
-                    let b = (b.double_value(&[y as i64, x as i64]) * 255.0) as u32;
-                    render_state.buffer[index] = (r << 24) + (g << 16) + (b << 8);
+                    let r = r_buf[index] as u32;
+                    let g = g_buf[index] as u32;
+                    let b = b_buf[index] as u32;
+                    render_state.buffer[index] = (r << 16) + (g << 8) + b;
                 }    
             }
             window
