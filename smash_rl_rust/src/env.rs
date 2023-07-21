@@ -20,20 +20,20 @@ struct RenderState {
 
 /// Rust version of the Micro Fighter environment.
 pub struct MFEnv {
-    game: MicroFighter,
-    observation_space: ([i64; 4], [i64; 1]),
-    action_space: i32,
-    player_stats: tch::Tensor,
-    bot_stats: tch::Tensor,
-    dmg_reward_amount: f32,
-    last_dist: f32,
-    player_frame_stack: Vec<Tensor>,
-    bot_frame_stack: Vec<Tensor>,
-    max_skip_frames: u32,
-    num_frames: u32,
-    num_channels: u32,
-    render_state: Option<RenderState>,
-    view_channels: (u32, u32, u32),
+    pub game: MicroFighter,
+    pub observation_space: ([i64; 4], [i64; 1]),
+    pub action_space: i32,
+    pub player_stats: tch::Tensor,
+    pub bot_stats: tch::Tensor,
+    pub dmg_reward_amount: f32,
+    pub last_dist: f32,
+    pub player_frame_stack: Vec<Tensor>,
+    pub bot_frame_stack: Vec<Tensor>,
+    pub max_skip_frames: u32,
+    pub num_frames: u32,
+    pub num_channels: u32,
+    // pub render_state: Option<RenderState>,
+    pub view_channels: (u32, u32, u32),
 }
 
 pub struct MFEnvInfo {
@@ -107,7 +107,7 @@ impl MFEnv {
             max_skip_frames,
             num_frames,
             num_channels,
-            render_state,
+            // render_state,
             view_channels,
         }
     }
@@ -291,31 +291,31 @@ impl MFEnv {
     }
 
     pub fn render(&mut self) {
-        if let Some(render_state) = &mut self.render_state {
-            let channels = &self.player_frame_stack[0];
-            let r = channels.get(self.view_channels.0 as i64).flip([0]) * 255.0;
-            let g = channels.get(self.view_channels.1 as i64).flip([0]) * 255.0;
-            let b = channels.get(self.view_channels.2 as i64).flip([0]) * 255.0;
-            let window = &mut render_state.window;
-            let mut r_buf = vec![0.0_f32; (IMG_SIZE * IMG_SIZE) as usize];
-            let mut g_buf = vec![0.0_f32; (IMG_SIZE * IMG_SIZE) as usize];
-            let mut b_buf = vec![0.0_f32; (IMG_SIZE * IMG_SIZE) as usize];
-            r.copy_data(&mut r_buf, (IMG_SIZE * IMG_SIZE) as usize);
-            g.copy_data(&mut g_buf, (IMG_SIZE * IMG_SIZE) as usize);
-            b.copy_data(&mut b_buf, (IMG_SIZE * IMG_SIZE) as usize);
-            for y in 0..IMG_SIZE {
-                for x in 0..IMG_SIZE {
-                    let index = (y * IMG_SIZE + x) as usize;
-                    let r = r_buf[index] as u32;
-                    let g = g_buf[index] as u32;
-                    let b = b_buf[index] as u32;
-                    render_state.buffer[index] = (r << 16) + (g << 8) + b;
-                }    
-            }
-            window
-                .update_with_buffer(&render_state.buffer, IMG_SIZE as usize, IMG_SIZE as usize)
-                .expect("Couldn't render buffer");
-        }
+        // if let Some(render_state) = &mut self.render_state {
+        //     let channels = &self.player_frame_stack[0];
+        //     let r = channels.get(self.view_channels.0 as i64).flip([0]) * 255.0;
+        //     let g = channels.get(self.view_channels.1 as i64).flip([0]) * 255.0;
+        //     let b = channels.get(self.view_channels.2 as i64).flip([0]) * 255.0;
+        //     let window = &mut render_state.window;
+        //     let mut r_buf = vec![0.0_f32; (IMG_SIZE * IMG_SIZE) as usize];
+        //     let mut g_buf = vec![0.0_f32; (IMG_SIZE * IMG_SIZE) as usize];
+        //     let mut b_buf = vec![0.0_f32; (IMG_SIZE * IMG_SIZE) as usize];
+        //     r.copy_data(&mut r_buf, (IMG_SIZE * IMG_SIZE) as usize);
+        //     g.copy_data(&mut g_buf, (IMG_SIZE * IMG_SIZE) as usize);
+        //     b.copy_data(&mut b_buf, (IMG_SIZE * IMG_SIZE) as usize);
+        //     for y in 0..IMG_SIZE {
+        //         for x in 0..IMG_SIZE {
+        //             let index = (y * IMG_SIZE + x) as usize;
+        //             let r = r_buf[index] as u32;
+        //             let g = g_buf[index] as u32;
+        //             let b = b_buf[index] as u32;
+        //             render_state.buffer[index] = (r << 16) + (g << 8) + b;
+        //         }    
+        //     }
+        //     window
+        //         .update_with_buffer(&render_state.buffer, IMG_SIZE as usize, IMG_SIZE as usize)
+        //         .expect("Couldn't render buffer");
+        // }
     }
 
     pub fn bot_obs(&self) -> (Tensor, Tensor) {

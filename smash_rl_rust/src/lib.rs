@@ -9,13 +9,14 @@ mod training;
 use micro_fighter::*;
 use ml::GameState;
 use pyo3::prelude::*;
-use training::test_jit;
+use training::{test_jit, WorkerContext};
 
 #[pymodule]
 fn smash_rl_rust(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<MicroFighter>()?;
     m.add_class::<StepOutput>()?;
     m.add_class::<GameState>()?;
+    m.add_class::<WorkerContext>()?;
     m.add_function(wrap_pyfunction!(test_jit, m)?)?;
     Ok(())
 }
