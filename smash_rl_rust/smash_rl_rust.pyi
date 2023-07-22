@@ -1,5 +1,7 @@
 from typing import List
 
+from torch import Tensor
+
 def test_jit() -> None: ...
 
 class MoveState:
@@ -47,6 +49,25 @@ class StepOutput:
 
 class GameState:
     pass
+
+class RolloutContext:
+    def __init__(
+        self,
+        total_num_envs: int,
+        num_workers: int,
+        num_steps: int,
+        max_skip_frames: int,
+        num_frames: int,
+        time_limit: int,
+        first_bot_path: str,
+    ) -> None: ...
+    def rollout(
+        self,
+        latest_policy_path: str,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, float]: ...
+    def push_bot(self, path: str) -> None: ...
+    def insert_bot(self, path: str, index: int) -> None: ...
+    def set_expl_reward_amount(self, amount: float) -> None: ...
 
 class MicroFighter:
     def __init__(self, human: bool) -> None: ...

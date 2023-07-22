@@ -25,11 +25,13 @@ from smash_rl.micro_fighter.env import MFEnv
 from smash_rl.utils import init_orthogonal
 from smash_rl_rust import test_jit
 
+from smash_rl_rust import RolloutContext
+
 _: Any
 
 # Hyperparameters
-num_envs = 16  # Number of environments to step through at once during sampling.
-train_steps = 256  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
+num_envs = 64  # Number of environments to step through at once during sampling.
+train_steps = 128  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
 iterations = 1000  # Number of sample/train iterations.
 train_iters = 2  # Number of passes over the samples collected.
 train_batch_size = 512  # Minibatch size while training models.
@@ -48,6 +50,7 @@ elo_k = 16  # ELO adjustment constant.
 eval_every = 2  # Number of iterations before evaluating.
 eval_steps = 5  # Number of eval runs to perform.
 max_eval_steps = 500  # Max number of steps to take during each eval run.
+num_workers = 8
 device = torch.device("cuda")  # Device to use during training.
 
 # Argument parsing
@@ -141,30 +144,22 @@ class PolicyNet(nn.Module):
         x = self.net(x)
         return x
 
-env = SyncVectorEnv(
-    [
-        lambda: TimeLimit(
-            MFEnv(max_skip_frames=max_skip_frames, num_frames=num_frames),
-            time_limit,
-        )
-        for _ in range(num_envs)
-    ]
-)
+
 test_env = TimeLimit(
     MFEnv(max_skip_frames=max_skip_frames, num_frames=num_frames), max_eval_steps
 )
 
 # If tracing, trace and load from Rust
 if args.trace:
-    obs_space = env.single_observation_space
-    act_space = env.single_action_space
+    obs_space = test_env.observation_space
+    act_space = test_env.action_space
     assert isinstance(obs_space, gym.spaces.Tuple)
     assert isinstance(obs_space.spaces[0], gym.spaces.Box)
     assert isinstance(obs_space.spaces[1], gym.spaces.Box)
     spatial_obs_space = obs_space.spaces[0]
     stats_obs_space = obs_space.spaces[1]
     assert isinstance(act_space, gym.spaces.Discrete)
-    
+
     # Compile policy network
     curr_time = time.time()
     p_net = PolicyNet(
@@ -172,7 +167,13 @@ if args.trace:
     )
     p_net.eval()
     sample_input = obs_space.sample()
-    traced = torch.jit.trace(p_net, (torch.from_numpy(sample_input[0]).unsqueeze(0), torch.from_numpy(sample_input[1]).unsqueeze(0)))
+    traced = torch.jit.trace(
+        p_net,
+        (
+            torch.from_numpy(sample_input[0]).unsqueeze(0),
+            torch.from_numpy(sample_input[1]).unsqueeze(0),
+        ),
+    )
     traced.save("temp/training/p_net_test.ptc")
 
     # Load from Rust
@@ -188,8 +189,8 @@ if args.generate:
     gen_count = args.generate
     max_per_part = 512
 
-    obs_space = env.single_observation_space
-    act_space = env.single_action_space
+    obs_space = test_env.observation_space
+    act_space = test_env.action_space
     assert isinstance(obs_space, gym.spaces.Tuple)
     assert isinstance(obs_space.spaces[0], gym.spaces.Box)
     assert isinstance(obs_space.spaces[1], gym.spaces.Box)
@@ -231,7 +232,9 @@ if args.generate:
             keys_stats.append(eval_obs_2.numpy())
             traj_len = 10
             traj_data_spatial = np.zeros([traj_len] + list(eval_obs_1.shape))
-            traj_data_scalar = np.zeros([traj_len] + [eval_obs_2.shape[0] + int(act_space.n)])
+            traj_data_scalar = np.zeros(
+                [traj_len] + [eval_obs_2.shape[0] + int(act_space.n)]
+            )
 
             for i in range(traj_len):
                 bot_obs_1, bot_obs_2 = test_env.bot_obs()
@@ -239,9 +242,7 @@ if args.generate:
                     torch.from_numpy(bot_obs_1).unsqueeze(0).float(),
                     torch.from_numpy(bot_obs_2).unsqueeze(0).float(),
                 ).squeeze()
-                bot_action = (
-                    Categorical(logits=bot_action_probs).sample().numpy()
-                )
+                bot_action = Categorical(logits=bot_action_probs).sample().numpy()
                 test_env.bot_step(bot_action)
 
                 action_probs = p_net(
@@ -269,7 +270,7 @@ if args.generate:
                     (obs_1_, obs_2_), _ = test_env.reset()
                     eval_obs_1 = torch.from_numpy(np.array(obs_1_)).float()
                     eval_obs_2 = torch.from_numpy(np.array(obs_2_)).float()
-                    
+
                     # Save episode data
                     round_result = 0
                     if eval_done:
@@ -283,7 +284,7 @@ if args.generate:
                     episode_data["traj_in_episode"] = traj_in_episode
                     traj_in_episode = []
                     episode_id += 1
-                    
+
                     break
 
             # Add trajectory data
@@ -292,10 +293,18 @@ if args.generate:
 
             # If max number of trajectories have been saved, save to disk
             if len(keys_spatial) == max_per_part:
-                np.save(f"temp/generated/{part_id}_keys_spatial.npy", np.stack(keys_spatial))
-                np.save(f"temp/generated/{part_id}_keys_stats.npy", np.stack(keys_stats))
-                np.save(f"temp/generated/{part_id}_data_spatial.npy", np.stack(data_spatial))
-                np.save(f"temp/generated/{part_id}_data_scalar.npy", np.stack(data_scalar))
+                np.save(
+                    f"temp/generated/{part_id}_keys_spatial.npy", np.stack(keys_spatial)
+                )
+                np.save(
+                    f"temp/generated/{part_id}_keys_stats.npy", np.stack(keys_stats)
+                )
+                np.save(
+                    f"temp/generated/{part_id}_data_spatial.npy", np.stack(data_spatial)
+                )
+                np.save(
+                    f"temp/generated/{part_id}_data_scalar.npy", np.stack(data_scalar)
+                )
                 keys_spatial = []
                 keys_stats = []
                 data_spatial = []
@@ -316,8 +325,8 @@ if args.generate:
 # If evaluating, load the latest policy
 if args.eval:
     eval_done = False
-    obs_space = env.single_observation_space
-    act_space = env.single_action_space
+    obs_space = test_env.observation_space
+    act_space = test_env.action_space
     assert isinstance(obs_space, gym.spaces.Tuple)
     assert isinstance(obs_space.spaces[0], gym.spaces.Box)
     assert isinstance(obs_space.spaces[1], gym.spaces.Box)
@@ -347,9 +356,7 @@ if args.eval:
                 torch.from_numpy(bot_obs_1).unsqueeze(0).float(),
                 torch.from_numpy(bot_obs_2).unsqueeze(0).float(),
             ).squeeze()
-            bot_action = (
-                Categorical(logits=bot_action_probs).sample().numpy()
-            )
+            bot_action = Categorical(logits=bot_action_probs).sample().numpy()
             test_env.bot_step(bot_action)
 
             action_probs = p_net(
@@ -390,16 +397,14 @@ wandb.init(
 )
 
 # Initialize policy and value networks
-obs_space = env.single_observation_space
-act_space = env.single_action_space
+obs_space = test_env.observation_space
+act_space = test_env.action_space
 assert isinstance(obs_space, gym.spaces.Tuple)
 assert isinstance(obs_space.spaces[0], gym.spaces.Box)
 assert isinstance(obs_space.spaces[1], gym.spaces.Box)
 spatial_obs_space = obs_space.spaces[0]
 stats_obs_space = obs_space.spaces[1]
 assert isinstance(act_space, gym.spaces.Discrete)
-assert isinstance(env.envs[0], TimeLimit)
-assert isinstance(env.envs[0].env, MFEnv)
 v_net = ValueNet(torch.Size(spatial_obs_space.shape), stats_obs_space.shape[0])
 p_net = PolicyNet(
     torch.Size(spatial_obs_space.shape), stats_obs_space.shape[0], int(act_space.n)
@@ -412,6 +417,7 @@ bot_data = [{"state_dict": p_net.state_dict(), "elo": start_elo}]
 bot_nets = [copy.deepcopy(p_net)]
 bot_p_indices = [0 for _ in range(num_envs)]
 current_elo = start_elo
+bot_net_path = "temp/training/bot_p_net.ptc"
 
 buffer_spatial = RolloutBuffer(
     torch.Size(spatial_obs_space.shape),
@@ -425,74 +431,54 @@ buffer_stats = StateRolloutBuffer(
     torch.Size(stats_obs_space.shape), num_envs, train_steps
 )
 
-(obs_1_, obs_2_), _ = env.reset()
-obs_1 = torch.from_numpy(obs_1_).float()
-obs_2 = torch.from_numpy(obs_2_).float()
+# Initialize rollout context
+sample_input = obs_space.sample()
+traced = torch.jit.trace(
+    p_net,
+    (
+        torch.from_numpy(sample_input[0]).unsqueeze(0),
+        torch.from_numpy(sample_input[1]).unsqueeze(0),
+    ),
+)
+p_net_path = "temp/training/p_net.ptc"
+traced.save(p_net_path)
+rollout_context = RolloutContext(
+    num_envs, num_workers, train_steps, max_skip_frames, num_frames, time_limit, p_net_path
+)
+
 for step in tqdm(range(iterations), position=0):
     percent_done = step / iterations
-    for env_ in env.envs:
-        assert isinstance(env_, TimeLimit)
-        assert isinstance(env_.env, MFEnv)
-        env_.env.set_dmg_reward_amount(1.0 - percent_done)
+    rollout_context.set_expl_reward_amount(1.0 - percent_done)
 
     # Collect experience
-    with torch.no_grad():
-        total_entropy = 0.0
-        for _ in tqdm(range(train_steps), position=1):
-            # Choose bot action
-            for env_index, env_ in enumerate(env.envs):
-                assert isinstance(env_, TimeLimit)
-                assert isinstance(env_.env, MFEnv)
-                bot_obs_1, bot_obs_2 = env_.env.bot_obs()
-                bot_action_probs = bot_nets[bot_p_indices[env_index]](
-                    torch.from_numpy(bot_obs_1).float().unsqueeze(0),
-                    torch.from_numpy(bot_obs_2).float().unsqueeze(0),
-                ).squeeze(0)
-                bot_action = Categorical(logits=bot_action_probs).sample().item()
-                env_.env.bot_step(bot_action)
-
-            # Choose player action
-            action_probs = p_net(obs_1, obs_2)
-            action_distr = Categorical(logits=action_probs)
-            total_entropy += action_distr.entropy().mean()
-            actions = action_distr.sample().numpy()
-            (obs_spatial_, obs_stats_), rewards, dones, truncs, _ = env.step(actions)
-
-            try:
-                (obs_1_, obs_2_), rewards, dones, truncs, _ = env.step(actions)
-                buffer_spatial.insert_step(
-                    obs_1,
-                    torch.from_numpy(actions).unsqueeze(1),
-                    action_probs,
-                    list(rewards),
-                    list(dones),
-                    list(truncs),
-                    None,
-                )
-                buffer_stats.insert_step(obs_2)
-                obs_1 = torch.from_numpy(obs_1_).float()
-                obs_2 = torch.from_numpy(obs_2_).float()
-
-                # Change opponent when environment ends
-                for env_index, env_ in enumerate(env.envs):
-                    assert isinstance(env_, TimeLimit)
-                    assert isinstance(env_.env, MFEnv)
-                    if dones[env_index] or truncs[env_index]:
-                        state_dict = random.choice(bot_data)["state_dict"]
-                        assert isinstance(state_dict, Mapping)
-                        bot_p_indices[env_index] = random.randrange(0, len(bot_data))
-                        bot_nets[bot_p_indices[env_index]].load_state_dict(state_dict)
-
-
-            except KeyboardInterrupt:
-                quit()
-            except Exception as e:
-                print(f"Exception in simulation: {e}. Resetting.")
-                (obs_1_, obs_2_), _ = env.reset()
-                obs_1 = torch.from_numpy(obs_1_).float()
-                obs_2 = torch.from_numpy(obs_2_).float()
-        buffer_spatial.insert_final_step(obs_1)
-        buffer_stats.insert_final_step(obs_2)
+    print("Performing rollouts...", end="")
+    curr_time = time.time()
+    traced = torch.jit.trace(
+        p_net,
+        (
+            torch.from_numpy(sample_input[0]).unsqueeze(0),
+            torch.from_numpy(sample_input[1]).unsqueeze(0),
+        ),
+    )
+    traced.save(p_net_path)
+    (
+        obs_1_buf,
+        obs_2_buf,
+        act_buf,
+        act_probs_buf,
+        reward_buf,
+        done_buf,
+        trunc_buf,
+        avg_entropy,
+    ) = rollout_context.rollout(p_net_path)
+    buffer_spatial.states.copy_(obs_1_buf)
+    buffer_stats.states.copy_(obs_2_buf)
+    buffer_spatial.actions.copy_(act_buf)
+    buffer_spatial.action_probs.copy_(act_probs_buf)
+    buffer_spatial.rewards.copy_(reward_buf)
+    buffer_spatial.dones.copy_(done_buf)
+    buffer_spatial.truncs.copy_(trunc_buf)
+    print(f" took {time.time() - curr_time} seconds.")
 
     # Train
     total_p_loss, total_v_loss = train_ppo(
@@ -567,7 +553,9 @@ for step in tqdm(range(iterations), position=0):
                             ea = 1.0 / (1.0 + 10.0 ** ((b_elo - current_elo) / 400.0))
                             eb = 1.0 / (1.0 + 10.0 ** ((current_elo - b_elo) / 400.0))
                             current_elo = current_elo + elo_k * (a - ea)
-                            bot_data[eval_bot_index]["elo"] = int(b_elo + elo_k * (b - eb))
+                            bot_data[eval_bot_index]["elo"] = int(
+                                b_elo + elo_k * (b - eb)
+                            )
                             (obs_1_, obs_2_), info = test_env.reset()
                             eval_obs_1 = torch.from_numpy(np.array(obs_1_)).float()
                             eval_obs_2 = torch.from_numpy(np.array(obs_2_)).float()
@@ -587,7 +575,7 @@ for step in tqdm(range(iterations), position=0):
         {
             "avg_v_loss": total_v_loss / train_iters,
             "avg_p_loss": total_p_loss / train_iters,
-            "entropy": total_entropy / train_steps,
+            "entropy": avg_entropy,
         }
     )
 
@@ -596,6 +584,15 @@ for step in tqdm(range(iterations), position=0):
         if len(bot_data) < max_bots:
             bot_data.append({"state_dict": p_net.state_dict(), "elo": int(current_elo)})
             bot_nets.append(copy.deepcopy(p_net))
+            traced = torch.jit.trace(
+                p_net,
+                (
+                    torch.from_numpy(sample_input[0]).unsqueeze(0),
+                    torch.from_numpy(sample_input[1]).unsqueeze(0),
+                ),
+            )
+            traced.save(bot_net_path)
+            rollout_context.push_bot(bot_net_path)
         else:
             # Replace bot with lowest ELO if that ELO is less than the current ELO
             next_bot_index = 0
@@ -610,6 +607,15 @@ for step in tqdm(range(iterations), position=0):
                     "elo": int(current_elo),
                 }
                 bot_nets[next_bot_index].load_state_dict(p_net.state_dict())
+                traced = torch.jit.trace(
+                    p_net,
+                    (
+                        torch.from_numpy(sample_input[0]).unsqueeze(0),
+                        torch.from_numpy(sample_input[1]).unsqueeze(0),
+                    ),
+                )
+                traced.save(bot_net_path)
+                rollout_context.insert_bot(bot_net_path, next_bot_index)
 
     torch.save(p_net.state_dict(), "temp/p_net.pt")
     torch.save(v_net.state_dict(), "temp/v_net.pt")

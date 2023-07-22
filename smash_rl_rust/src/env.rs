@@ -140,26 +140,26 @@ impl MFEnv {
 
         // Stats observation
         self.player_stats = Tensor::zeros([18], options);
-        let one = Tensor::ones([1], options);
+        let one = Tensor::ones([], options);
         self.player_stats
             .get(step_output.player_state as i64)
-            .set_data(&one);
+            .copy_(&one);
         self.player_stats
             .get(16)
-            .set_data(&(step_output.player_damage as f32 / 100.0 * &one));
+            .copy_(&(step_output.player_damage as f32 / 100.0 * &one));
         self.player_stats
             .get(17)
-            .set_data(&(step_output.player_dir * &one));
+            .copy_(&(step_output.player_dir * &one));
         self.bot_stats = Tensor::zeros([18], options);
         self.bot_stats
             .get(step_output.opponent_state as i64)
-            .set_data(&one);
+            .copy_(&one);
         self.bot_stats
             .get(16)
-            .set_data(&(step_output.opponent_damage as f32 / 100.0 * &one));
+            .copy_(&(step_output.opponent_damage as f32 / 100.0 * &one));
         self.bot_stats
             .get(17)
-            .set_data(&(step_output.opponent_dir * one));
+            .copy_(&(step_output.opponent_dir * one));
         let stats_obs = Tensor::concatenate(&[self.player_stats.copy(), self.bot_stats.copy()], 0);
 
         let terminated = step_output.round_over;
@@ -240,6 +240,7 @@ impl MFEnv {
         let stats_obs = Tensor::concatenate(&[self.player_stats.copy(), self.bot_stats.copy()], 0);
 
         self.last_dist = step_output.player_pos.0.pow(2) as f32 / 200_u32.pow(2) as f32;
+        self.current_time = 0;
 
         (
             (Tensor::stack(&self.player_frame_stack, 0), stats_obs),
@@ -248,6 +249,7 @@ impl MFEnv {
     }
 
     fn gen_channels(&self, step_output: &StepOutput, is_player: bool) -> Vec<Tensor> {
+        let _guard = tch::no_grad_guard();
         let options = (tch::Kind::Float, tch::Device::Cpu);
         let hboxes = &step_output.hboxes;
         let mut hit_channel = Tensor::zeros([IMG_SIZE as i64, IMG_SIZE as i64], options);

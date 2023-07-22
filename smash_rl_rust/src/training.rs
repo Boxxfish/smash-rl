@@ -1,3 +1,5 @@
+use std::sync::{Arc, RwLock};
+
 use pyo3::prelude::*;
 use pyo3_tch::PyTensor;
 use rand::Rng;
@@ -132,6 +134,7 @@ impl VecEnv {
     }
 
     pub fn step(&mut self, actions: &[u32]) -> VecEnvOutput {
+        let _guard = tch::no_grad_guard();
         let mut obs_1_vec = Vec::with_capacity(self.num_envs);
         let mut obs_2_vec = Vec::with_capacity(self.num_envs);
         let mut rewards = Vec::with_capacity(self.num_envs);
@@ -162,6 +165,7 @@ impl VecEnv {
     }
 
     pub fn reset(&mut self) -> (Tensor, Tensor) {
+        let _guard = tch::no_grad_guard();
         let mut obs_1_vec = Vec::with_capacity(self.num_envs);
         let mut obs_2_vec = Vec::with_capacity(self.num_envs);
 
@@ -263,65 +267,96 @@ impl RolloutContext {
     pub fn rollout(
         &mut self,
         latest_policy_path: &str,
-    ) -> (PyTensor, PyTensor, PyTensor, PyTensor, PyTensor, PyTensor,f32) {
+    ) -> (
+        PyTensor,
+        PyTensor,
+        PyTensor,
+        PyTensor,
+        PyTensor,
+        PyTensor,
+        PyTensor,
+        f32,
+    ) {
         let _guard = tch::no_grad_guard();
-        let p_net = tch::CModule::load(latest_policy_path).expect("Couldn't load module.");
-        let mut rng = rand::thread_rng();
+        let p_net =
+            Arc::new(tch::CModule::load(latest_policy_path).expect("Couldn't load module."));
+        let mut bot_nets = Vec::new();
+        bot_nets.append(&mut self.bot_nets);
+        let mut bot_nets = Arc::new(RwLock::new(bot_nets));
 
-        let mut total_entropy = 0.0;
-        for w_ctx in &mut self.w_ctxs {
-            let mut obs_1 = w_ctx.last_obs_1.copy();
-            let mut obs_2 = w_ctx.last_obs_2.copy();
-            for _ in 0..w_ctx.num_steps {
-                // Choose bot action
-                for (env_index, env_) in w_ctx.env.envs.iter_mut().enumerate() {
-                    let (bot_obs_1, bot_obs_2) = env_.bot_obs();
-                    let bot_action_probs = self.bot_nets[w_ctx.bot_ids[env_index]]
-                        .forward_ts(&[bot_obs_1.unsqueeze(0), bot_obs_2.unsqueeze(0)])
-                        .unwrap()
-                        .squeeze();
-                    let bot_action = sample(&bot_action_probs)[0];
-                    env_.bot_step(bot_action);
-                }
+        let mut handles = Vec::new();
+        for mut w_ctx in self.w_ctxs.drain(0..self.w_ctxs.len()) {
+            let p_net = p_net.clone();
+            let bot_nets = bot_nets.clone();
+            let handle = std::thread::spawn(move || {
+                let _guard = tch::no_grad_guard();
+                let mut rng = rand::thread_rng();
+                let mut obs_1 = w_ctx.last_obs_1.copy();
+                let mut obs_2 = w_ctx.last_obs_2.copy();
+                let mut total_entropy = 0.0;
+                for _ in 0..w_ctx.num_steps {
+                    // Choose bot action
+                    for (env_index, env_) in w_ctx.env.envs.iter_mut().enumerate() {
+                        let (bot_obs_1, bot_obs_2) = env_.bot_obs();
+                        let bot_action_probs = bot_nets.read().unwrap()[w_ctx.bot_ids[env_index]]
+                            .forward_ts(&[bot_obs_1.unsqueeze(0), bot_obs_2.unsqueeze(0)])
+                            .unwrap();
+                        let bot_action = sample(&bot_action_probs)[0];
+                        env_.bot_step(bot_action);
+                    }
 
-                // Choose player action
-                let action_probs = p_net.forward_ts(&[&obs_1, &obs_2]).unwrap();
-                let actions = sample(&action_probs);
+                    // Choose player action
+                    let action_probs = p_net.forward_ts(&[&obs_1, &obs_2]).unwrap();
+                    let actions = sample(&action_probs);
 
-                // Compute entropy.
-                // Based on the official Torch Distributions source.
-                let logits = action_probs.clamp(f64::MIN, f64::MAX);
-                let probs = action_probs.softmax(-1, tch::Kind::Float);
-                let p_log_p = logits * probs;
-                let entropy = -p_log_p.sum_dim_intlist(-1, false, tch::Kind::Float);
-                total_entropy += entropy.mean(tch::Kind::Float).double_value(&[0]);
+                    // Compute entropy.
+                    // Based on the official Torch Distributions source.
+                    let logits = &action_probs;
+                    let probs = action_probs.softmax(-1, tch::Kind::Float);
+                    let p_log_p = logits * probs;
+                    let entropy = -p_log_p.sum_dim_intlist(-1, false, tch::Kind::Float);
+                    total_entropy += entropy.mean(tch::Kind::Float).double_value(&[]);
 
-                let ((obs_1_, obs_2_), rewards, dones, truncs, _) = w_ctx.env.step(&actions);
-                obs_1 = obs_1_;
-                obs_2 = obs_2_;
-                w_ctx.rollout_buffer.insert_step(
-                    &obs_1,
-                    &obs_2,
-                    &Tensor::from_slice(&actions.iter().map(|a| *a as i64).collect::<Vec<_>>())
-                        .unsqueeze(1),
-                    &action_probs,
-                    &rewards,
-                    &dones,
-                    &truncs,
-                );
+                    let ((obs_1_, obs_2_), rewards, dones, truncs, _) = w_ctx.env.step(&actions);
+                    obs_1 = obs_1_;
+                    obs_2 = obs_2_;
+                    w_ctx.rollout_buffer.insert_step(
+                        &obs_1,
+                        &obs_2,
+                        &Tensor::from_slice(&actions.iter().map(|a| *a as i64).collect::<Vec<_>>())
+                            .unsqueeze(1),
+                        &action_probs,
+                        &rewards,
+                        &dones,
+                        &truncs,
+                    );
 
-                // Change opponent when environment ends
-                for (env_index, env_) in w_ctx.env.envs.iter().enumerate() {
-                    if dones[env_index] || truncs[env_index] {
-                        w_ctx.bot_ids[env_index] = rng.gen_range(0..self.bot_nets.len());
+                    // Change opponent when environment ends
+                    for (env_index, env_) in w_ctx.env.envs.iter().enumerate() {
+                        if dones[env_index] || truncs[env_index] {
+                            w_ctx.bot_ids[env_index] =
+                                rng.gen_range(0..bot_nets.read().unwrap().len());
+                        }
                     }
                 }
-            }
 
-            w_ctx.rollout_buffer.insert_final_step(&obs_1, &obs_2);
-            w_ctx.last_obs_1 = obs_1;
-            w_ctx.last_obs_2 = obs_2;
+                w_ctx.rollout_buffer.insert_final_step(&obs_1, &obs_2);
+                w_ctx.last_obs_1 = obs_1;
+                w_ctx.last_obs_2 = obs_2;
+
+                (w_ctx, total_entropy)
+            });
+            handles.push(handle);
         }
+
+        // Process data once finished
+        let mut total_entropy = 0.0;
+        for handle in handles {
+            let (w_ctx, w_total_entropy) = handle.join().unwrap();
+            self.w_ctxs.push(w_ctx);
+            total_entropy += w_total_entropy;
+        }
+        self.bot_nets.append(bot_nets.write().as_mut().unwrap());
 
         // Copy the contents of each rollout buffer
         let state_buffer_1 = Tensor::concatenate(
@@ -345,6 +380,14 @@ impl RolloutContext {
                 .w_ctxs
                 .iter()
                 .map(|w_ctx| &w_ctx.rollout_buffer.actions)
+                .collect::<Vec<&Tensor>>(),
+            1,
+        );
+        let act_probs_buffer = Tensor::concatenate(
+            &self
+                .w_ctxs
+                .iter()
+                .map(|w_ctx| &w_ctx.rollout_buffer.action_probs)
                 .collect::<Vec<&Tensor>>(),
             1,
         );
@@ -376,9 +419,19 @@ impl RolloutContext {
             w_ctx.rollout_buffer.next = 0;
         }
 
-        let entropy = total_entropy as f32 / self.w_ctxs.len() as f32;
-        
-        (PyTensor(state_buffer_1), PyTensor(state_buffer_2), PyTensor(act_buffer), PyTensor(reward_buffer), PyTensor(done_buffer), PyTensor(trunc_buffer), entropy)
+        let entropy =
+            total_entropy as f32 / (self.w_ctxs.len() * self.w_ctxs[0].num_steps as usize) as f32;
+
+        (
+            PyTensor(state_buffer_1),
+            PyTensor(state_buffer_2),
+            PyTensor(act_buffer),
+            PyTensor(act_probs_buffer),
+            PyTensor(reward_buffer),
+            PyTensor(done_buffer),
+            PyTensor(trunc_buffer),
+            entropy,
+        )
     }
 
     /// Appends a new bot.
