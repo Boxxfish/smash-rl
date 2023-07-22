@@ -1,7 +1,8 @@
 use pyo3::prelude::*;
+use pyo3_tch::PyTensor;
 use rand::Rng;
 use tch::{nn::Module, Tensor};
-use weighted_rand::builder::{WalkerTableBuilder, NewBuilder};
+use weighted_rand::builder::{NewBuilder, WalkerTableBuilder};
 
 use crate::env::{MFEnv, MFEnvInfo};
 
@@ -185,7 +186,13 @@ pub struct WorkerContext {
 }
 
 impl WorkerContext {
-    pub fn new(num_envs: usize, num_steps: u32, max_skip_frames: u32, num_frames: u32, time_limit: u32) -> Self {
+    pub fn new(
+        num_envs: usize,
+        num_steps: u32,
+        max_skip_frames: u32,
+        num_frames: u32,
+        time_limit: u32,
+    ) -> Self {
         let mut env = VecEnv::new(
             (0..num_envs)
                 .map(|_| MFEnv::new(max_skip_frames, num_frames, false, (0, 0, 0), time_limit))
@@ -219,7 +226,6 @@ impl WorkerContext {
 #[pyclass]
 pub struct RolloutContext {
     w_ctxs: Vec<WorkerContext>,
-    max_num_bots: usize,
     bot_nets: Vec<tch::CModule>,
 }
 
@@ -230,7 +236,6 @@ impl RolloutContext {
     pub fn new(
         total_num_envs: usize,
         num_workers: usize,
-        max_num_bots: usize,
         num_steps: u32,
         max_skip_frames: u32,
         num_frames: u32,
@@ -239,19 +244,26 @@ impl RolloutContext {
     ) -> Self {
         let envs_per_worker = total_num_envs / num_workers;
         let w_ctxs = (0..num_workers)
-            .map(|_| WorkerContext::new(envs_per_worker, num_steps, max_skip_frames, num_frames, time_limit))
+            .map(|_| {
+                WorkerContext::new(
+                    envs_per_worker,
+                    num_steps,
+                    max_skip_frames,
+                    num_frames,
+                    time_limit,
+                )
+            })
             .collect();
         let bot_nets = vec![tch::CModule::load(first_bot_path).expect("Couldn't load module.")];
-        Self {
-            w_ctxs,
-            max_num_bots,
-            bot_nets,
-        }
+        Self { w_ctxs, bot_nets }
     }
 
     /// Performs one iteration of the rollout process.
-    /// Returns entropy.
-    pub fn rollout(&mut self, latest_policy_path: &str) -> f32 {
+    /// Returns buffer tensors and entropy.
+    pub fn rollout(
+        &mut self,
+        latest_policy_path: &str,
+    ) -> (PyTensor, PyTensor, PyTensor, PyTensor, PyTensor, PyTensor,f32) {
         let _guard = tch::no_grad_guard();
         let p_net = tch::CModule::load(latest_policy_path).expect("Couldn't load module.");
         let mut rng = rand::thread_rng();
@@ -290,7 +302,8 @@ impl RolloutContext {
                 w_ctx.rollout_buffer.insert_step(
                     &obs_1,
                     &obs_2,
-                    &Tensor::from_slice(&actions.iter().map(|a| *a as i64).collect::<Vec<_>>()).unsqueeze(1),
+                    &Tensor::from_slice(&actions.iter().map(|a| *a as i64).collect::<Vec<_>>())
+                        .unsqueeze(1),
                     &action_probs,
                     &rewards,
                     &dones,
@@ -310,7 +323,62 @@ impl RolloutContext {
             w_ctx.last_obs_2 = obs_2;
         }
 
-        total_entropy as f32 / self.w_ctxs.len() as f32
+        // Copy the contents of each rollout buffer
+        let state_buffer_1 = Tensor::concatenate(
+            &self
+                .w_ctxs
+                .iter()
+                .map(|w_ctx| &w_ctx.rollout_buffer.states_1)
+                .collect::<Vec<&Tensor>>(),
+            1,
+        );
+        let state_buffer_2 = Tensor::concatenate(
+            &self
+                .w_ctxs
+                .iter()
+                .map(|w_ctx| &w_ctx.rollout_buffer.states_2)
+                .collect::<Vec<&Tensor>>(),
+            1,
+        );
+        let act_buffer = Tensor::concatenate(
+            &self
+                .w_ctxs
+                .iter()
+                .map(|w_ctx| &w_ctx.rollout_buffer.actions)
+                .collect::<Vec<&Tensor>>(),
+            1,
+        );
+        let reward_buffer = Tensor::concatenate(
+            &self
+                .w_ctxs
+                .iter()
+                .map(|w_ctx| &w_ctx.rollout_buffer.rewards)
+                .collect::<Vec<&Tensor>>(),
+            1,
+        );
+        let done_buffer = Tensor::concatenate(
+            &self
+                .w_ctxs
+                .iter()
+                .map(|w_ctx| &w_ctx.rollout_buffer.dones)
+                .collect::<Vec<&Tensor>>(),
+            1,
+        );
+        let trunc_buffer = Tensor::concatenate(
+            &self
+                .w_ctxs
+                .iter()
+                .map(|w_ctx| &w_ctx.rollout_buffer.truncs)
+                .collect::<Vec<&Tensor>>(),
+            1,
+        );
+        for w_ctx in self.w_ctxs.iter_mut() {
+            w_ctx.rollout_buffer.next = 0;
+        }
+
+        let entropy = total_entropy as f32 / self.w_ctxs.len() as f32;
+        
+        (PyTensor(state_buffer_1), PyTensor(state_buffer_2), PyTensor(act_buffer), PyTensor(reward_buffer), PyTensor(done_buffer), PyTensor(trunc_buffer), entropy)
     }
 
     /// Appends a new bot.

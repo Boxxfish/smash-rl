@@ -3163,6 +3163,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pyo3-tch"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38e61ece38121d7453a766ab4c673e781a7555ad116260d782c8cc1b5e6411c0"
+dependencies = [
+ "pyo3",
+ "tch",
+ "torch-sys",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3606,6 +3617,7 @@ dependencies = [
  "buffer-graphics-lib",
  "minifb",
  "pyo3",
+ "pyo3-tch",
  "rand",
  "rmp-serde",
  "tch",
