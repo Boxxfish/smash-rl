@@ -3,7 +3,7 @@ Environments for Micro Fighter.
 """
 import math
 import random
-from typing import Any, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 import gymnasium as gym
 import numpy as np
 from smash_rl_rust import MicroFighter, StepOutput
@@ -33,42 +33,10 @@ class EnvState:
         self.game_state = game_state
 
 
-class MFEnv(gym.Env):
+class BaseMFEnv(gym.Env):
     """
-    An environment that wraps the MicroFighter game.
-
-    ### Observation Space
-
-    #### Spatial:
-    4x4 channels of size IMG_SIZE x IMG_SIZE. The channels are:
-
-    0. 1 if hitbox, 0 if hurtbox.
-    1. Damage sustained by hurtboxes or inflicted by hitboxes.
-    2. 1 if this is the player, 0 if this is the opponent.
-    3. 1 if hbox, 0 if empty space.
-
-    We manually perform frame stacking.
-
-    #### Stats:
-    0 - 15. Player state.
-    16. Player damage.
-    17. Direction, -1 if left, 1 if right.
-    18 - 33. Opponent state.
-    34. Opponent damage.
-    35. Direction, -1 if left, 1 if right.
-
-    ### Action Space
-    0. Do nothing.
-    1. Left.
-    2. Right.
-    3. Jump.
-    4. Light.
-    5. Heavy.
-    6. Shield.
-    7. Grab.
-    8. Special.
+    Base class for MicroFighter environments.
     """
-
     def __init__(
         self,
         render_mode: Optional[str] = None,
@@ -76,20 +44,6 @@ class MFEnv(gym.Env):
         max_skip_frames: int = 0,
         num_frames: int = 4,
     ):
-        """
-        Args:
-        
-        render_mode: If "human", renders channels.
-
-        view_channels: Optional 3 string tuple of channels. The channels will be \
-            rendered as R, G, and B. See class description for channels.
-        
-        max_skip_frames: Maximum number of frames that will be skipped. When 0, no \
-            frames are skipped. Right now, this is deterministic.
-        
-        num_frames: Number of frames in framestack.
-        """
-
         self.game = MicroFighter(False)
         self.num_channels = 4
         self.observation_space = gym.spaces.Tuple(
@@ -105,8 +59,6 @@ class MFEnv(gym.Env):
         self.bot_stats = np.zeros([18])
         self.render_mode = render_mode
         self.num_frames = num_frames
-        self.dmg_reward_amount = 1.0
-        self.last_dist = 0.0
         self.player_frame_stack = [
             np.zeros([self.num_channels, IMG_SIZE, IMG_SIZE])
             for _ in range(self.num_frames)
@@ -123,88 +75,6 @@ class MFEnv(gym.Env):
                 (IMG_SIZE * IMG_SCALE, IMG_SIZE * IMG_SCALE)
             )
             self.clock = pygame.time.Clock()
-
-    def step(
-        self, action: int
-    ) -> tuple[tuple[np.ndarray, np.ndarray], float, bool, bool, dict[str, Any]]:
-        skip_frames = self.max_skip_frames
-        dmg_reward = 0.0
-        for _ in range(skip_frames + 1):
-            step_output = self.game.step(action)
-            dmg_reward += step_output.net_damage
-            if step_output.round_over:
-                break
-        
-        # Spatial observation
-        channels = self.gen_channels(step_output, is_player=True)
-        self.player_frame_stack = self.insert_obs(
-            np.stack(channels), self.player_frame_stack
-        )
-        bot_channels = self.gen_channels(step_output, is_player=False)
-        self.bot_frame_stack = self.insert_obs(
-            np.stack(bot_channels), self.bot_frame_stack
-        )
-
-        # Stats observation
-        self.player_stats = np.zeros([18])
-        self.player_stats[int(step_output.player_state)] = 1
-        self.player_stats[16] = step_output.player_damage / 100.0
-        self.player_stats[17] = step_output.player_dir
-        self.bot_stats = np.zeros([18])
-        self.bot_stats[int(step_output.opponent_state)] = 1
-        self.bot_stats[16] = step_output.opponent_damage / 100.0
-        self.bot_stats[17] = step_output.opponent_dir
-        stats_obs = np.concatenate([self.player_stats, self.bot_stats])
-
-        terminated = step_output.round_over
-        round_reward = 0.0
-        if terminated:
-            round_reward = 1.0 if step_output.player_won else -1.0
-
-        curr_dist = step_output.player_pos[0]**2 / 200**2
-        delta_dist = (curr_dist - self.last_dist)
-        self.last_dist = curr_dist
-
-        dmg_reward = dmg_reward / 10 - delta_dist
-
-        reward = dmg_reward * (self.dmg_reward_amount) + round_reward
-
-        return (np.stack(self.player_frame_stack), stats_obs), reward, terminated, False, {"player_won": step_output.player_won}
-
-    def reset(
-        self, *args, seed=None, options=None
-    ) -> tuple[tuple[np.ndarray, np.ndarray], dict[str, Any]]:
-        step_output = self.game.reset()
-        self.player_frame_stack = [
-            np.zeros([self.num_channels, IMG_SIZE, IMG_SIZE])
-            for _ in range(self.num_frames)
-        ]
-        self.bot_frame_stack = [
-            np.zeros([self.num_channels, IMG_SIZE, IMG_SIZE])
-            for _ in range(self.num_frames)
-        ]
-        channels = self.gen_channels(step_output, is_player=True)
-        self.player_frame_stack = self.insert_obs(
-            np.stack(channels), self.player_frame_stack
-        )
-        bot_channels = self.gen_channels(step_output, is_player=False)
-        self.bot_frame_stack = self.insert_obs(
-            np.stack(bot_channels), self.bot_frame_stack
-        )
-
-        self.player_stats = np.zeros([18])
-        self.player_stats[int(step_output.player_state)] = 1
-        self.player_stats[16] = step_output.player_damage / 100.0
-        self.player_stats[17] = step_output.player_dir
-        self.bot_stats = np.zeros([18])
-        self.bot_stats[int(step_output.opponent_state)] = 1
-        self.bot_stats[16] = step_output.opponent_damage / 100.0
-        self.bot_stats[17] = step_output.opponent_dir
-        stats_obs = np.concatenate([self.player_stats, self.bot_stats])
-        
-        self.last_dist = step_output.player_pos[0]**2 / 200**2
-
-        return (np.stack(self.player_frame_stack), stats_obs), {}
 
     def gen_channels(
         self, step_output: StepOutput, is_player: bool
@@ -275,6 +145,42 @@ class MFEnv(gym.Env):
             frame_stack[i] = frame_stack[i - 1]
         frame_stack[0] = obs
         return frame_stack
+    
+    def compute_stats(self, step_output: StepOutput):
+        self.player_stats = np.zeros([18])
+        self.player_stats[int(step_output.player_state)] = 1
+        self.player_stats[16] = step_output.player_damage / 100.0
+        self.player_stats[17] = step_output.player_dir
+        self.bot_stats = np.zeros([18])
+        self.bot_stats[int(step_output.opponent_state)] = 1
+        self.bot_stats[16] = step_output.opponent_damage / 100.0
+        self.bot_stats[17] = step_output.opponent_dir
+
+    def base_reset(
+        self
+    ) -> tuple[tuple[tuple[np.ndarray, np.ndarray], dict[str, Any]], StepOutput]:
+        step_output = self.game.reset()
+        self.player_frame_stack = [
+            np.zeros([self.num_channels, IMG_SIZE, IMG_SIZE])
+            for _ in range(self.num_frames)
+        ]
+        self.bot_frame_stack = [
+            np.zeros([self.num_channels, IMG_SIZE, IMG_SIZE])
+            for _ in range(self.num_frames)
+        ]
+        channels = self.gen_channels(step_output, is_player=True)
+        self.player_frame_stack = self.insert_obs(
+            np.stack(channels), self.player_frame_stack
+        )
+        bot_channels = self.gen_channels(step_output, is_player=False)
+        self.bot_frame_stack = self.insert_obs(
+            np.stack(bot_channels), self.bot_frame_stack
+        )
+
+        self.compute_stats(step_output)
+        stats_obs = np.concatenate([self.player_stats, self.bot_stats])
+
+        return ((np.stack(self.player_frame_stack), stats_obs), {}), step_output
 
     def render(self):
         if self.render_mode == "human":
@@ -330,8 +236,162 @@ class MFEnv(gym.Env):
         self.bot_frame_stack = state.bot_frame_stack
         self.game.load_state(state.game_state)
 
+class MFEnv(BaseMFEnv):
+    """
+    An environment that wraps the MicroFighter game.
+
+    ### Observation Space
+
+    #### Spatial:
+    4x4 channels of size IMG_SIZE x IMG_SIZE. The channels are:
+
+    0. 1 if hitbox, 0 if hurtbox.
+    1. Damage sustained by hurtboxes or inflicted by hitboxes.
+    2. 1 if this is the player, 0 if this is the opponent.
+    3. 1 if hbox, 0 if empty space.
+
+    We manually perform frame stacking.
+
+    #### Stats:
+    0 - 15. Player state.
+    16. Player damage.
+    17. Direction, -1 if left, 1 if right.
+    18 - 33. Opponent state.
+    34. Opponent damage.
+    35. Direction, -1 if left, 1 if right.
+
+    ### Action Space
+    0. Do nothing.
+    1. Left.
+    2. Right.
+    3. Jump.
+    4. Light.
+    5. Heavy.
+    6. Shield.
+    7. Grab.
+    8. Special.
+    """
+
+    def __init__(
+        self,
+        render_mode: Optional[str] = None,
+        view_channels: Tuple[int, int, int] = (0, 1, 2),
+        max_skip_frames: int = 0,
+        num_frames: int = 4,
+    ):
+        """
+        Args:
+        
+        render_mode: If "human", renders channels.
+
+        view_channels: Optional 3 string tuple of channels. The channels will be \
+            rendered as R, G, and B. See class description for channels.
+        
+        max_skip_frames: Maximum number of frames that will be skipped. When 0, no \
+            frames are skipped. Right now, this is deterministic.
+        
+        num_frames: Number of frames in framestack.
+        """
+        super().__init__(render_mode, view_channels, max_skip_frames, num_frames)
+        self.dmg_reward_amount = 1.0
+        self.last_dist = 0.0
+
+    def step(
+        self, action: int
+    ) -> tuple[tuple[np.ndarray, np.ndarray], float, bool, bool, dict[str, Any]]:
+        skip_frames = self.max_skip_frames
+        dmg_reward = 0.0
+        for _ in range(skip_frames + 1):
+            step_output = self.game.step(action)
+            dmg_reward += step_output.net_damage
+            if step_output.round_over:
+                break
+        
+        # Spatial observation
+        channels = self.gen_channels(step_output, is_player=True)
+        self.player_frame_stack = self.insert_obs(
+            np.stack(channels), self.player_frame_stack
+        )
+        bot_channels = self.gen_channels(step_output, is_player=False)
+        self.bot_frame_stack = self.insert_obs(
+            np.stack(bot_channels), self.bot_frame_stack
+        )
+
+        # Stats observation
+        self.compute_stats(step_output)
+        stats_obs = np.concatenate([self.player_stats, self.bot_stats])
+
+        terminated = step_output.round_over
+        round_reward = 0.0
+        if terminated:
+            round_reward = 1.0 if step_output.player_won else -1.0
+
+        curr_dist = step_output.player_pos[0]**2 / 200**2
+        delta_dist = (curr_dist - self.last_dist)
+        self.last_dist = curr_dist
+
+        dmg_reward = dmg_reward / 10 - delta_dist
+
+        reward = dmg_reward * (self.dmg_reward_amount) + round_reward
+
+        return (np.stack(self.player_frame_stack), stats_obs), reward, terminated, False, {"player_won": step_output.player_won}
+
+    def reset(
+        self, *args, seed=None, options=None
+    ) -> tuple[tuple[np.ndarray, np.ndarray], dict[str, Any]]:
+        reset_data, step_output = self.base_reset()
+        
+        self.last_dist = step_output.player_pos[0]**2 / 200**2
+
+        return reset_data
+
     def set_dmg_reward_amount(self, amount: float):
         """
         Sets how much the damage reward will be added to the overall reward.
         """
         self.dmg_reward_amount = amount
+
+class CurriculumEnv(BaseMFEnv):
+    """
+    Environment used in curriculum learning setting.
+    """
+    def __init__(
+        self,
+        reward_fn: Callable[[StepOutput], tuple[float, bool]],
+        render_mode: Optional[str] = None,
+        view_channels: Tuple[int, int, int] = (0, 1, 2),
+        max_skip_frames: int = 0,
+        num_frames: int = 4,
+    ):
+        """
+        reward_fn: Function that accepts a StepOutput and returns the reward and terminated flag.
+        """
+        super().__init__(render_mode, view_channels, max_skip_frames, num_frames)
+        self.reward_fn = reward_fn
+
+    def step(
+        self, action: int
+    ) -> tuple[tuple[np.ndarray, np.ndarray], float, bool, bool, dict[str, Any]]:
+        skip_frames = self.max_skip_frames
+        for _ in range(skip_frames + 1):
+            step_output = self.game.step(action)
+            if step_output.round_over:
+                break
+        
+        # Spatial observation
+        channels = self.gen_channels(step_output, is_player=True)
+        self.player_frame_stack = self.insert_obs(
+            np.stack(channels), self.player_frame_stack
+        )
+        bot_channels = self.gen_channels(step_output, is_player=False)
+        self.bot_frame_stack = self.insert_obs(
+            np.stack(bot_channels), self.bot_frame_stack
+        )
+
+        # Stats observation
+        self.compute_stats(step_output)
+        stats_obs = np.concatenate([self.player_stats, self.bot_stats])
+
+        reward, terminated = self.reward_fn(step_output)
+
+        return (np.stack(self.player_frame_stack), stats_obs), reward, terminated, False, {"player_won": step_output.player_won}
