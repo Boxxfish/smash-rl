@@ -30,7 +30,7 @@ from smash_rl_rust import RolloutContext
 _: Any
 
 # Hyperparameters
-num_envs = 64  # Number of environments to step through at once during sampling.
+num_envs = 32  # Number of environments to step through at once during sampling.
 train_steps = 128  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
 iterations = 1000  # Number of sample/train iterations.
 train_iters = 2  # Number of passes over the samples collected.
@@ -56,6 +56,7 @@ device = torch.device("cuda")  # Device to use during training.
 # Argument parsing
 parser = ArgumentParser()
 parser.add_argument("--eval", action="store_true")
+parser.add_argument("--resume", action="store_true")
 parser.add_argument("--generate", action="store", default=None)
 parser.add_argument("--trace", action="store_true")
 args = parser.parse_args()
@@ -224,7 +225,7 @@ if args.generate:
         (obs_1_, obs_2_), _ = test_env.reset()
         eval_obs_1 = torch.from_numpy(np.array(obs_1_)).float()
         eval_obs_2 = torch.from_numpy(np.array(obs_2_)).float()
-        for j in tqdm(range(gen_count)):
+        for j in tqdm(range(int(gen_count))):
             traj_in_episode.append(j)
 
             # Store info for key
@@ -312,15 +313,16 @@ if args.generate:
                 part_id += 1
 
         # One final save
-        np.save(f"temp/generated/{part_id}_keys_spatial.npy", np.stack(keys_spatial))
-        np.save(f"temp/generated/{part_id}_keys_stats.npy", np.stack(keys_stats))
-        np.save(f"temp/generated/{part_id}_data_spatial.npy", np.stack(data_spatial))
-        np.save(f"temp/generated/{part_id}_data_scalar.npy", np.stack(data_scalar))
-        keys_spatial = []
-        keys_stats = []
-        data_spatial = []
-        data_scalar = []
-        part_id += 1
+        if len(keys_spatial) > 0:
+            np.save(f"temp/generated/{part_id}_keys_spatial.npy", np.stack(keys_spatial))
+            np.save(f"temp/generated/{part_id}_keys_stats.npy", np.stack(keys_stats))
+            np.save(f"temp/generated/{part_id}_data_spatial.npy", np.stack(data_spatial))
+            np.save(f"temp/generated/{part_id}_data_scalar.npy", np.stack(data_scalar))
+            keys_spatial = []
+            keys_stats = []
+            data_spatial = []
+            data_scalar = []
+        quit()
 
 # If evaluating, load the latest policy
 if args.eval:
@@ -409,6 +411,9 @@ v_net = ValueNet(torch.Size(spatial_obs_space.shape), stats_obs_space.shape[0])
 p_net = PolicyNet(
     torch.Size(spatial_obs_space.shape), stats_obs_space.shape[0], int(act_space.n)
 )
+if args.resume:
+    p_net.load_state_dict(torch.load("temp/p_net.pt"))
+    v_net.load_state_dict(torch.load("temp/v_net.pt"))
 v_opt = torch.optim.Adam(v_net.parameters(), lr=v_lr)
 p_opt = torch.optim.Adam(p_net.parameters(), lr=p_lr)
 

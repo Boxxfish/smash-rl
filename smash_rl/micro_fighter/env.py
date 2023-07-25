@@ -246,7 +246,7 @@ class MFEnv(BaseMFEnv):
     4x4 channels of size IMG_SIZE x IMG_SIZE. The channels are:
 
     0. 1 if hitbox, 0 if hurtbox.
-    1. Damage sustained by hurtboxes or inflicted by hitboxes.
+    1. Damage inflicted by hitboxes.
     2. 1 if this is the player, 0 if this is the opponent.
     3. 1 if hbox, 0 if empty space.
 
@@ -358,6 +358,7 @@ class CurriculumEnv(BaseMFEnv):
     def __init__(
         self,
         reward_fn: Callable[[StepOutput], tuple[float, bool]],
+        bot_actions_fn: Callable[[], int],
         render_mode: Optional[str] = None,
         view_channels: Tuple[int, int, int] = (0, 1, 2),
         max_skip_frames: int = 0,
@@ -368,10 +369,14 @@ class CurriculumEnv(BaseMFEnv):
         """
         super().__init__(render_mode, view_channels, max_skip_frames, num_frames)
         self.reward_fn = reward_fn
+        self.bot_actions_fn = bot_actions_fn
 
     def step(
         self, action: int
     ) -> tuple[tuple[np.ndarray, np.ndarray], float, bool, bool, dict[str, Any]]:
+        bot_action = self.bot_actions_fn()
+        self.game.bot_step(bot_action)
+
         skip_frames = self.max_skip_frames
         for _ in range(skip_frames + 1):
             step_output = self.game.step(action)
@@ -395,3 +400,9 @@ class CurriculumEnv(BaseMFEnv):
         reward, terminated = self.reward_fn(step_output)
 
         return (np.stack(self.player_frame_stack), stats_obs), reward, terminated, False, {"player_won": step_output.player_won}
+    
+    def reset(
+        self, *args, seed=None, options=None
+    ) -> tuple[tuple[np.ndarray, np.ndarray], dict[str, Any]]:
+        reset_data, step_output = self.base_reset()
+        return reset_data
