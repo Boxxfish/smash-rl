@@ -394,10 +394,11 @@ if __name__ == "__main__":
             int(act_space.n),
         )
         p_net.load_state_dict(torch.load("temp/p_net.pt"))
-        p_net.eval()
+        shared_net = p_net.shared
+        shared_net.eval()
         sample_input = obs_space.sample()
         traced = torch.jit.trace(
-            p_net.shared,
+            shared_net,
             (
                 torch.from_numpy(sample_input[0]).unsqueeze(0),
                 torch.from_numpy(sample_input[1]).unsqueeze(0),

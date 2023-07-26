@@ -3,6 +3,7 @@ Trains an agent with PPO, augmented with retrieval.
 """
 from argparse import ArgumentParser
 import copy
+import math
 import random
 import time
 from typing import Any, Mapping
@@ -70,7 +71,12 @@ class NeighborEncoder(nn.Module):
     Encodes neighbor information.
     """
 
-    def __init__(self, neighbor_shape_spatial: torch.Size, neighbor_shape_scalar: int):
+    def __init__(
+        self,
+        obs_embedding_size: int,
+        neighbor_shape_spatial: torch.Size,
+        neighbor_shape_scalar: int,
+    ):
         nn.Module.__init__(self)
         channels = neighbor_shape_spatial[1]
         self.spatial_net = nn.Sequential(
@@ -82,7 +88,7 @@ class NeighborEncoder(nn.Module):
             nn.ReLU(),
         )
         self.scalar_net = nn.Sequential(
-            nn.Linear(neighbor_shape_scalar, 64),
+            nn.Linear(neighbor_shape_scalar + obs_embedding_size, 64),
             nn.ReLU(),
             nn.Linear(64, 128),
             nn.ReLU(),
@@ -96,7 +102,9 @@ class NeighborEncoder(nn.Module):
             nn.ReLU(),
         )
 
-    def forward(self, spatial: torch.Tensor, scalar: torch.Tensor):
+    def forward(
+        self, obs_embedding: torch.Tensor, spatial: torch.Tensor, scalar: torch.Tensor
+    ):
         batch_size = spatial.shape[0]
         k = spatial.shape[1]
 
@@ -104,14 +112,18 @@ class NeighborEncoder(nn.Module):
         spatial = self.spatial_net(spatial)
         spatial = torch.max(torch.max(spatial, dim=3).values, dim=2).values
 
-        scalar = torch.flatten(scalar, 0, 1)
+        scalar = torch.flatten(
+            torch.concatenate([scalar, obs_embedding.unsqueeze(1).repeat([1, k, 1])], 2),
+            0,
+            1,
+        )
         scalar = self.scalar_net(scalar)
 
         x = torch.concat([spatial, scalar], dim=1)
         x = self.net2(x)
 
         x = torch.reshape(x, (batch_size, k, 512))
-        x = x.sum(1, keepdim=False)
+        x = x.sum(1, keepdim=False) / math.sqrt(k)
 
         return x
 
@@ -169,7 +181,7 @@ class ValueNet(nn.Module):
     ):
         nn.Module.__init__(self)
         self.shared = SharedNet(obs_shape_spatial, obs_shape_stats)
-        self.neighbor = NeighborEncoder(neighbor_shape_spatial, neighbor_shape_scalar)
+        self.neighbor = NeighborEncoder(512, neighbor_shape_spatial, neighbor_shape_scalar)
         self.net = nn.Sequential(
             nn.Linear(1024, 512),
             nn.ReLU(),
@@ -187,7 +199,7 @@ class ValueNet(nn.Module):
         neighbor_scalar: torch.Tensor,
     ):
         x = self.shared(spatial, stats)
-        neighbor_x = self.neighbor(neighbor_spatial, neighbor_scalar)
+        neighbor_x = self.neighbor(x, neighbor_spatial, neighbor_scalar)
         x = torch.concat([x, neighbor_x], 1)
         x = self.net(x)
         return x
@@ -204,7 +216,7 @@ class PolicyNet(nn.Module):
     ):
         nn.Module.__init__(self)
         self.shared = SharedNet(obs_shape_spatial, obs_shape_stats)
-        self.neighbor = NeighborEncoder(neighbor_shape_spatial, neighbor_shape_scalar)
+        self.neighbor = NeighborEncoder(512, neighbor_shape_spatial, neighbor_shape_scalar)
         self.net = nn.Sequential(
             nn.Linear(1024, 512),
             nn.ReLU(),
@@ -223,7 +235,7 @@ class PolicyNet(nn.Module):
         neighbor_scalar: torch.Tensor,
     ):
         x = self.shared(spatial, stats)
-        neighbor_x = self.neighbor(neighbor_spatial, neighbor_scalar)
+        neighbor_x = self.neighbor(x, neighbor_spatial, neighbor_scalar)
         x = torch.concat([x, neighbor_x], 1)
         x = self.net(x)
         return x
@@ -280,7 +292,7 @@ if __name__ == "__main__":
             torch.Size(neighbor_spatial_obs_space.shape),
             neighbor_scalar_obs_space.shape[1],
         )
-        p_net.load_state_dict(torch.load("temp/p_net_retrieval.pt"))
+        # p_net.load_state_dict(torch.load("temp/p_net_retrieval.pt"))
         test_env = TimeLimit(
             RetrievalMFEnv(
                 retrieval_ctx,
