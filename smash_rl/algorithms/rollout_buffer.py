@@ -215,7 +215,7 @@ class RolloutBuffer:
             return batches
 
     def samples_merged(
-        self, other: StateRolloutBuffer, batch_size: int, discount: float, lambda_: float, v_net: nn.Module
+        self, others: list[StateRolloutBuffer], batch_size: int, discount: float, lambda_: float, v_net: nn.Module
     ) -> list[
         Tuple[
             list[torch.Tensor],
@@ -234,13 +234,13 @@ class RolloutBuffer:
             advantages = torch.zeros(
                 [self.num_steps, self.num_envs], dtype=torch.float, device=d
             )
-            step_returns: torch.Tensor = v_net(self.states[self.next], other.states[self.next]).squeeze()
+            step_returns: torch.Tensor = v_net(*([self.states[self.next]] + [other.states[self.next] for other in others])).squeeze()
 
             # Calculate advantage estimates and rewards to go
             state_values = step_returns.clone()
             step_advantages = torch.zeros([self.num_envs], dtype=torch.float, device=d)
             for i in reversed(range(self.num_steps)):
-                prev_states = (self.states[i], other.states[i])
+                prev_states = [self.states[i]] + [other.states[i] for other in others]
                 rewards = self.rewards[i]
                 inv_dones = 1.0 - self.dones[i]
                 inv_truncs = 1.0 - self.truncs[i]
@@ -263,7 +263,7 @@ class RolloutBuffer:
             # Permute transitions to decorrelate them
             exp_count = self.num_envs * self.num_steps
             indices = torch.randperm(exp_count, dtype=torch.int, device=d)
-            rand_prev_states = [states.flatten(0, 1).index_select(0, indices) for states in [self.states, other.states]]
+            rand_prev_states = [states.flatten(0, 1).index_select(0, indices) for states in ([self.states] + [other.states for other in others])]
             rand_actions = self.actions.flatten(0, 1).index_select(0, indices)
             rand_action_probs = self.action_probs.flatten(0, 1).index_select(0, indices)
             rand_masks = self.masks.flatten(0, 1).index_select(0, indices)
@@ -278,7 +278,7 @@ class RolloutBuffer:
                     (
                         [rand_prev_state[start:end].reshape(
                             [batch_size] + list(state.shape)[2:]
-                        ) for rand_prev_state, state in zip(rand_prev_states, [self.states, other.states])],
+                        ) for rand_prev_state, state in zip(rand_prev_states, [self.states] + [other.states for other in others])],
                         rand_actions[start:end].reshape(
                             [batch_size] + list(self.actions.shape)[2:]
                         ),

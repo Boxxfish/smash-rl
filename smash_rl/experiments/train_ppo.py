@@ -3,12 +3,10 @@ Trains an agent with PPO.
 """
 from argparse import ArgumentParser
 import copy
-from functools import reduce
 import random
 import time
-from typing import Any, Mapping, Union
+from typing import Any
 import gymnasium as gym
-from gymnasium.vector import SyncVectorEnv
 import numpy as np
 from sklearn.decomposition import PCA  # type: ignore
 import pickle
@@ -64,6 +62,7 @@ parser.add_argument("--resume", action="store_true")
 parser.add_argument("--generate", action="store", default=None)
 parser.add_argument("--pca", action="store", default=None)
 parser.add_argument("--trace", action="store_true")
+parser.add_argument("--trace_encoder", action="store_true")
 args = parser.parse_args()
 
 
@@ -263,7 +262,7 @@ if __name__ == "__main__":
                 keys_spatial.append(eval_obs_1.numpy())
                 keys_stats.append(eval_obs_2.numpy())
                 traj_len = 4
-                traj_data_spatial = np.zeros([traj_len] + list(eval_obs_1.shape))
+                traj_data_spatial = np.zeros([traj_len] + list(eval_obs_1.shape[1:]))
                 traj_data_scalar = np.zeros(
                     [traj_len] + [eval_obs_2.shape[0] + int(act_space.n)]
                 )
@@ -290,7 +289,9 @@ if __name__ == "__main__":
                     ) = test_env.step(action)
 
                     # Save trajectory data
-                    traj_data_spatial[i] = obs_1_
+                    traj_data_spatial[i] = obs_1_[
+                        0
+                    ]  # Only save most recent spatial observation in stack
                     act_tensor = np.zeros([int(act_space.n)])
                     act_tensor[int(action)] = 1
                     traj_data_scalar[i] = np.concatenate([obs_2_, act_tensor])
@@ -322,8 +323,20 @@ if __name__ == "__main__":
                         break
 
                 # Add trajectory data
-                data_spatial.append(traj_data_spatial)
-                data_scalar.append(traj_data_scalar)
+                data_spatial.append(
+                    traj_data_spatial.reshape(
+                        [
+                            traj_data_spatial.shape[0] * traj_data_spatial.shape[1],
+                            traj_data_spatial.shape[2],
+                            traj_data_spatial.shape[3],
+                        ]
+                    )
+                )
+                data_scalar.append(
+                    traj_data_scalar.reshape(
+                        [traj_data_scalar.shape[0] * traj_data_scalar.shape[1]]
+                    )
+                )
 
                 # If max number of trajectories have been saved, save to disk
                 if len(keys_spatial) == max_per_part:
@@ -364,6 +377,34 @@ if __name__ == "__main__":
                     json.dump(episode_datas, wfile)
 
             quit()
+
+    # If tracing the encoder, load the current policy and trace part of it
+    if args.trace_encoder:
+        obs_space = test_env.observation_space
+        act_space = test_env.action_space
+        assert isinstance(obs_space, gym.spaces.Tuple)
+        assert isinstance(obs_space.spaces[0], gym.spaces.Box)
+        assert isinstance(obs_space.spaces[1], gym.spaces.Box)
+        spatial_obs_space = obs_space.spaces[0]
+        stats_obs_space = obs_space.spaces[1]
+        assert isinstance(act_space, gym.spaces.Discrete)
+        p_net = PolicyNet(
+            torch.Size(spatial_obs_space.shape),
+            stats_obs_space.shape[0],
+            int(act_space.n),
+        )
+        p_net.load_state_dict(torch.load("temp/p_net.pt"))
+        p_net.eval()
+        sample_input = obs_space.sample()
+        traced = torch.jit.trace(
+            p_net.shared,
+            (
+                torch.from_numpy(sample_input[0]).unsqueeze(0),
+                torch.from_numpy(sample_input[1]).unsqueeze(0),
+            ),
+        )
+        traced.save("temp/encoder.ptc")
+        quit()
 
     # If setting up PCA, train a PCA model
     if args.pca:
@@ -626,7 +667,7 @@ if __name__ == "__main__":
             p_opt,
             v_opt,
             buffer_spatial,
-            buffer_stats,
+            [buffer_stats],
             device,
             train_iters,
             train_batch_size,

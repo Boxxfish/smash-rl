@@ -15,7 +15,7 @@ def train_ppo(
     p_opt: torch.optim.Optimizer,
     v_opt: torch.optim.Optimizer,
     buffer_1: RolloutBuffer,
-    buffer_2: StateRolloutBuffer,
+    aux_buffers: list[StateRolloutBuffer],
     device: torch.device,
     train_iters: int,
     train_batch_size: int,
@@ -49,14 +49,13 @@ def train_ppo(
     v_opt.zero_grad()
 
     for _ in tqdm(range(train_iters), position=1):
-        batches = buffer_1.samples_merged(buffer_2, train_batch_size, discount, lambda_, v_net_frozen)
+        batches = buffer_1.samples_merged(aux_buffers, train_batch_size, discount, lambda_, v_net_frozen)
         for (
             i,
-            ((prev_states_1, prev_states_2), actions, action_probs, returns, advantages, action_masks),
+            (prev_states, actions, action_probs, returns, advantages, action_masks),
         ) in enumerate(batches):
             # Move batch to device if applicable
-            prev_states_1 = prev_states_1.to(device=device)
-            prev_states_2 = prev_states_2.to(device=device)
+            prev_states = [prev_state.to(device=device) for prev_state in prev_states]
             actions = actions.to(device=device)
             action_probs = action_probs.to(device=device)
             returns = returns.to(device=device)
@@ -68,10 +67,7 @@ def train_ppo(
                 old_act_probs = Categorical(logits=action_probs).log_prob(
                     actions.squeeze()
                 )
-            if use_masks:
-                new_log_probs = p_net(prev_states_1, prev_states_2, action_masks)
-            else:
-                new_log_probs = p_net(prev_states_1, prev_states_2)
+            new_log_probs = p_net(*prev_states)
             new_act_distr = Categorical(logits=new_log_probs)
             new_act_probs = new_act_distr.log_prob(
                 actions.squeeze()
@@ -84,7 +80,7 @@ def train_ppo(
             total_p_loss += p_loss.item()
 
             # Train value network
-            diff = v_net(prev_states_1, prev_states_2) - returns
+            diff = v_net(*prev_states) - returns
             v_loss = (diff * diff).mean() / gradient_steps
             v_loss.backward()
             total_v_loss += v_loss.item()

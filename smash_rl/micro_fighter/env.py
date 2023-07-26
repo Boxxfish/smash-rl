@@ -10,8 +10,13 @@ from smash_rl_rust import MicroFighter, StepOutput
 from PIL import Image, ImageDraw  # type: ignore
 from matplotlib import pyplot as plt  # type: ignore
 import pygame
-
+from horapy import HNSWIndex  # type: ignore
+import json
 from smash_rl_rust import GameState
+from pathlib import Path
+from sklearn.decomposition import PCA  # type: ignore
+from torch import nn
+import torch
 
 IMG_SIZE = 64
 IMG_SCALE = 8
@@ -37,6 +42,7 @@ class BaseMFEnv(gym.Env):
     """
     Base class for MicroFighter environments.
     """
+
     def __init__(
         self,
         render_mode: Optional[str] = None,
@@ -88,7 +94,7 @@ class BaseMFEnv(gym.Env):
         dmg_channel = np.zeros([IMG_SIZE, IMG_SIZE])
         player_channel = np.zeros([IMG_SIZE, IMG_SIZE])
         box_channel = np.zeros([IMG_SIZE, IMG_SIZE])
-        
+
         for hbox in hboxes:
             box_img = Image.new("1", (IMG_SIZE, IMG_SIZE))
             box_draw = ImageDraw.ImageDraw(box_img)
@@ -145,7 +151,7 @@ class BaseMFEnv(gym.Env):
             frame_stack[i] = frame_stack[i - 1]
         frame_stack[0] = obs
         return frame_stack
-    
+
     def compute_stats(self, step_output: StepOutput):
         self.player_stats = np.zeros([18])
         self.player_stats[int(step_output.player_state)] = 1
@@ -157,7 +163,7 @@ class BaseMFEnv(gym.Env):
         self.bot_stats[17] = step_output.opponent_dir
 
     def base_reset(
-        self
+        self,
     ) -> tuple[tuple[tuple[np.ndarray, np.ndarray], dict[str, Any]], StepOutput]:
         step_output = self.game.reset()
         self.player_frame_stack = [
@@ -203,7 +209,10 @@ class BaseMFEnv(gym.Env):
         Returns an observation for the player. This observation is manually frame
         stacked.
         """
-        return (np.stack(self.player_frame_stack), np.concatenate([self.player_stats, self.bot_stats]))
+        return (
+            np.stack(self.player_frame_stack),
+            np.concatenate([self.player_stats, self.bot_stats]),
+        )
 
     def bot_obs(self) -> tuple[np.ndarray, np.ndarray]:
         """
@@ -211,7 +220,10 @@ class BaseMFEnv(gym.Env):
         Returns an observation for the bot. This observation is manually frame
         stacked.
         """
-        return (np.stack(self.bot_frame_stack), np.concatenate([self.bot_stats, self.player_stats]))
+        return (
+            np.stack(self.bot_frame_stack),
+            np.concatenate([self.bot_stats, self.player_stats]),
+        )
 
     def bot_step(self, action: int):
         """
@@ -235,6 +247,7 @@ class BaseMFEnv(gym.Env):
         self.player_frame_stack = state.player_frame_stack
         self.bot_frame_stack = state.bot_frame_stack
         self.game.load_state(state.game_state)
+
 
 class MFEnv(BaseMFEnv):
     """
@@ -306,7 +319,7 @@ class MFEnv(BaseMFEnv):
             dmg_reward += step_output.net_damage
             if step_output.round_over:
                 break
-        
+
         # Spatial observation
         channels = self.gen_channels(step_output, is_player=True)
         self.player_frame_stack = self.insert_obs(
@@ -326,22 +339,28 @@ class MFEnv(BaseMFEnv):
         if terminated:
             round_reward = 1.0 if step_output.player_won else -1.0
 
-        curr_dist = step_output.player_pos[0]**2 / 200**2
-        delta_dist = (curr_dist - self.last_dist)
+        curr_dist = step_output.player_pos[0] ** 2 / 200**2
+        delta_dist = curr_dist - self.last_dist
         self.last_dist = curr_dist
 
         dmg_reward = dmg_reward / 10 - delta_dist
 
         reward = dmg_reward * (self.dmg_reward_amount) + round_reward
 
-        return (np.stack(self.player_frame_stack), stats_obs), reward, terminated, False, {"player_won": step_output.player_won}
+        return (
+            (np.stack(self.player_frame_stack), stats_obs),
+            reward,
+            terminated,
+            False,
+            {"player_won": step_output.player_won},
+        )
 
     def reset(
         self, *args, seed=None, options=None
     ) -> tuple[tuple[np.ndarray, np.ndarray], dict[str, Any]]:
         reset_data, step_output = self.base_reset()
-        
-        self.last_dist = step_output.player_pos[0]**2 / 200**2
+
+        self.last_dist = step_output.player_pos[0] ** 2 / 200**2
 
         return reset_data
 
@@ -351,10 +370,12 @@ class MFEnv(BaseMFEnv):
         """
         self.dmg_reward_amount = amount
 
+
 class CurriculumEnv(BaseMFEnv):
     """
     Environment used in curriculum learning setting.
     """
+
     def __init__(
         self,
         reward_fn: Callable[[StepOutput], tuple[float, bool]],
@@ -382,7 +403,7 @@ class CurriculumEnv(BaseMFEnv):
             step_output = self.game.step(action)
             if step_output.round_over:
                 break
-        
+
         # Spatial observation
         channels = self.gen_channels(step_output, is_player=True)
         self.player_frame_stack = self.insert_obs(
@@ -399,10 +420,154 @@ class CurriculumEnv(BaseMFEnv):
 
         reward, terminated = self.reward_fn(step_output)
 
-        return (np.stack(self.player_frame_stack), stats_obs), reward, terminated, False, {"player_won": step_output.player_won}
-    
+        return (
+            (np.stack(self.player_frame_stack), stats_obs),
+            reward,
+            terminated,
+            False,
+            {"player_won": step_output.player_won},
+        )
+
     def reset(
         self, *args, seed=None, options=None
     ) -> tuple[tuple[np.ndarray, np.ndarray], dict[str, Any]]:
         reset_data, step_output = self.base_reset()
         return reset_data
+
+
+class RetrievalContext:
+    """
+    Central location for data needed for retrieval.
+    """
+
+    def __init__(
+        self,
+        key_dim: int,
+        index_path: str,
+        generated_dir: str,
+        episode_data_path: str,
+        encoder: nn.Module,
+        pca: PCA,
+    ):
+        self.encoder = encoder
+        self.pca = pca
+        print("Loading retrieval context...", end="")
+        # Load index
+        self.index = HNSWIndex(key_dim, "usize")
+        self.index.load(index_path)
+        self.index.build("dot_product")
+
+        # Set up episode data
+        traj_data = []
+        with open(episode_data_path, "r") as f:
+            episode_data = json.load(f)
+        for data in episode_data:
+            traj_in_episode = len(data.pop("traj_in_episode"))
+            for _ in range(traj_in_episode):
+                traj_data.append(data)
+
+        # Load trajectory data
+        data_path = Path(generated_dir)
+        file_count = len([item for item in data_path.iterdir()]) // 2
+        data_spatial = []
+        data_scalar = []
+        for i in range(file_count):
+            data_spatial.append(np.load(data_path / f"{i}_data_spatial.npy"))
+            data_scalar.append(np.load(data_path / f"{i}_data_scalar.npy"))
+        self.data_spatial = np.concatenate(data_spatial, 0)
+        self.data_scalar = np.concatenate(data_scalar, 0)
+        del data_spatial, data_scalar
+        extra_scalar = np.zeros([self.data_scalar.shape[0], 1])
+        for i in range(len(traj_data)):
+            player_won = traj_data[i]["player_won"]
+            extra_scalar[i][0] = player_won
+        self.data_scalar = np.concatenate([self.data_scalar, extra_scalar], 1)
+        print("Done.")
+
+    def search(self, key: np.ndarray, top_k: int) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Returns top k spatial and scalar data.
+        First dimension of both is `top_k`.
+        """
+        indices = np.array(self.index.search(key, top_k))
+        results_spatial = self.data_spatial[indices]
+        results_scalar = self.data_scalar[indices]
+        return (results_spatial, results_scalar)
+
+    def search_from_obs(
+        self, spatial: np.ndarray, stats: np.ndarray, top_k: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Returns top k spatial and scalar data.
+        First dimension of both is `top_k`.
+        """
+        with torch.no_grad():
+            encoded = self.encoder(
+                torch.from_numpy(spatial).unsqueeze(0).float(),
+                torch.from_numpy(stats).unsqueeze(0).float(),
+            ).numpy()
+            key = self.pca.transform(encoded).squeeze()
+        return self.search(key, top_k)
+
+
+class RetrievalMFEnv(MFEnv):
+    def __init__(
+        self,
+        retrieval_ctx: RetrievalContext,
+        top_k: int,
+        render_mode: Optional[str] = None,
+        view_channels: Tuple[int, int, int] = (0, 1, 2),
+        max_skip_frames: int = 0,
+        num_frames: int = 4,
+    ):
+        """
+        A retrieval augmented environment, where each observation is augmented
+        with top K metadata items from a large dataset.
+        Other than that, this is the exact same as MFEnv.
+        """
+        super().__init__(render_mode, view_channels, max_skip_frames, num_frames)
+        self.retrieval_ctx = retrieval_ctx
+        self.top_k = top_k
+        self.observation_space = gym.spaces.Tuple(
+            [
+                # Standard observation
+                gym.spaces.Box(
+                    -1.0, 1.0, [num_frames, self.num_channels, IMG_SIZE, IMG_SIZE]
+                ),
+                gym.spaces.Box(-1.0, 2.0, [36]),
+                # Neighbor observations
+                gym.spaces.Box(-1.0, 1.0, [top_k, 16, IMG_SIZE, IMG_SIZE]),
+                gym.spaces.Box(-1.0, 2.0, [top_k, 181]),
+            ]
+        )
+
+    def step(  # type: ignore
+        self, action: int
+    ) -> tuple[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], float, bool, bool, dict[str, Any]]:  # type: ignore
+        (spatial, stats), reward, done, trunc, info = super().step(action)
+        neighbor_spatial, neighbor_scalar = self.retrieval_ctx.search_from_obs(
+            spatial, stats, self.top_k
+        )
+        return (
+            (spatial, stats, neighbor_spatial, neighbor_scalar),
+            reward,
+            done,
+            trunc,
+            info,
+        )
+
+    def reset(  # type: ignore
+        self, *args, seed=None, options=None
+    ) -> tuple[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], dict[str, Any]]:
+        ((spatial, stats), info), step_output = self.base_reset()
+        neighbor_spatial, neighbor_scalar = self.retrieval_ctx.search_from_obs(
+            spatial, stats, self.top_k
+        )
+        return (spatial, stats, neighbor_spatial, neighbor_scalar), info
+
+    def bot_obs(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:  # type: ignore
+        spatial, stats = super().bot_obs()
+        neighbor_spatial, neighbor_scalar = self.retrieval_ctx.search_from_obs(
+            spatial, stats, self.top_k
+        )
+        return (spatial, stats, neighbor_spatial, neighbor_scalar)

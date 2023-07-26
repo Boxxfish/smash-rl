@@ -330,7 +330,7 @@ for step in tqdm(range(iterations), position=0):
         p_opt,
         v_opt,
         buffer_spatial,
-        buffer_stats,
+        [buffer_stats],
         device,
         train_iters,
         train_batch_size,
