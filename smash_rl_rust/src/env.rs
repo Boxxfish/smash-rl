@@ -330,11 +330,11 @@ impl MFEnv {
         // }
     }
 
-    pub fn bot_obs(&self) -> (Tensor, Tensor) {
-        (
+    pub fn bot_obs(&self) -> Vec<Tensor> {
+        vec![
             Tensor::stack(&self.bot_frame_stack, 0),
             Tensor::concatenate(&[self.bot_stats.copy(), self.player_stats.copy()], 0),
-        )
+        ]
     }
 
     pub fn bot_step(&mut self, action: u32) {

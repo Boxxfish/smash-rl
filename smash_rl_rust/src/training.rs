@@ -138,7 +138,7 @@ impl VecEnv {
 
     pub fn step(&mut self, actions: &[u32]) -> VecEnvOutput {
         let _guard = tch::no_grad_guard();
-        let mut obs_vec: Vec<_> = (0..2).into_iter().map(|_| Vec::with_capacity(self.num_envs)).collect();
+        let mut obs_vec: Vec<_> = (0..2).map(|_| Vec::with_capacity(self.num_envs)).collect();
         let mut rewards = Vec::with_capacity(self.num_envs);
         let mut dones = Vec::with_capacity(self.num_envs);
         let mut truncs = Vec::with_capacity(self.num_envs);
@@ -170,7 +170,7 @@ impl VecEnv {
 
     pub fn reset(&mut self) -> Vec<Tensor> {
         let _guard = tch::no_grad_guard();
-        let mut obs_vec: Vec<_> = (0..2).into_iter().map(|_| Vec::with_capacity(self.num_envs)).collect();
+        let mut obs_vec: Vec<_> = (0..2).map(|_| Vec::with_capacity(self.num_envs)).collect();
 
         for i in 0..self.num_envs {
             let (obs, _) = self.envs[i].reset();
@@ -296,8 +296,7 @@ impl RolloutContext {
                 for _ in 0..w_ctx.num_steps {
                     // Choose bot action
                     for (env_index, env_) in w_ctx.env.envs.iter_mut().enumerate() {
-                        let (bot_obs_1, bot_obs_2) = env_.bot_obs();
-                        let bot_obs: Vec<_> = [bot_obs_1, bot_obs_2]
+                        let bot_obs: Vec<_> = env_.bot_obs()
                             .iter()
                             .map(|t| t.unsqueeze(0))
                             .collect();
@@ -320,7 +319,8 @@ impl RolloutContext {
                     let entropy = -p_log_p.sum_dim_intlist(-1, false, tch::Kind::Float);
                     total_entropy += entropy.mean(tch::Kind::Float).double_value(&[]);
 
-                    let (obs, rewards, dones, truncs, _) = w_ctx.env.step(&actions);
+                    let (obs_, rewards, dones, truncs, _) = w_ctx.env.step(&actions);
+                    obs = obs_;
                     w_ctx.rollout_buffer.insert_step(
                         &obs,
                         &Tensor::from_slice(&actions.iter().map(|a| *a as i64).collect::<Vec<_>>())
@@ -358,7 +358,7 @@ impl RolloutContext {
         self.bot_nets.append(bot_nets.write().as_mut().unwrap());
 
         // Copy the contents of each rollout buffer
-        let state_buffers = (0..self.w_ctxs[0].rollout_buffer.states.len()).into_iter().map(|i| PyTensor(Tensor::concatenate(
+        let state_buffers = (0..self.w_ctxs[0].rollout_buffer.states.len()).map(|i| PyTensor(Tensor::concatenate(
             &self
                 .w_ctxs
                 .iter()
