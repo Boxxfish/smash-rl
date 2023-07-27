@@ -654,8 +654,8 @@ if __name__ == "__main__":
         )
         traced.save(p_net_path)
         (
-            obs_1_buf,
-            obs_2_buf,
+            (obs_1_buf,
+            obs_2_buf),
             act_buf,
             act_probs_buf,
             reward_buf,

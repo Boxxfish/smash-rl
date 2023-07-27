@@ -118,7 +118,7 @@ impl MFEnv {
         }
     }
 
-    pub fn step(&mut self, action: u32) -> ((Tensor, Tensor), f32, bool, bool, MFEnvInfo) {
+    pub fn step(&mut self, action: u32) -> (Vec<Tensor>, f32, bool, bool, MFEnvInfo) {
         let _guard = tch::no_grad_guard();
         let options = (tch::Kind::Float, tch::Device::Cpu);
         let skip_frames = self.max_skip_frames;
@@ -181,7 +181,7 @@ impl MFEnv {
         let truncated = self.current_time >= self.time_limit;
 
         (
-            (Tensor::stack(&self.player_frame_stack, 0), stats_obs),
+            vec![Tensor::stack(&self.player_frame_stack, 0), stats_obs],
             reward,
             terminated,
             truncated,
@@ -191,7 +191,7 @@ impl MFEnv {
         )
     }
 
-    pub fn reset(&mut self) -> ((Tensor, Tensor), MFEnvInfo) {
+    pub fn reset(&mut self) -> (Vec<Tensor>, MFEnvInfo) {
         let _guard = tch::no_grad_guard();
         let options = (tch::Kind::Float, tch::Device::Cpu);
         let step_output = self.game.reset();
@@ -243,7 +243,7 @@ impl MFEnv {
         self.current_time = 0;
 
         (
-            (Tensor::stack(&self.player_frame_stack, 0), stats_obs),
+            vec![Tensor::stack(&self.player_frame_stack, 0), stats_obs],
             MFEnvInfo { player_won: false },
         )
     }

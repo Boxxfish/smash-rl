@@ -422,6 +422,30 @@ if __name__ == "__main__":
         torch.Size(neighbor_scalar_obs_space.shape), num_envs, train_steps
     )
 
+    # Initialize rollout context
+    sample_input = obs_space.sample()
+    traced = torch.jit.trace(
+        p_net,
+        (
+            torch.from_numpy(sample_input[0]).unsqueeze(0),
+            torch.from_numpy(sample_input[1]).unsqueeze(0),
+            torch.from_numpy(sample_input[2]).unsqueeze(0),
+            torch.from_numpy(sample_input[3]).unsqueeze(0),
+        ),
+    )
+    p_net_path = "temp/training/p_net.ptc"
+    traced.save(p_net_path)
+    rollout_context = RolloutContext(
+        num_envs,
+        num_workers,
+        train_steps,
+        max_skip_frames,
+        num_frames,
+        time_limit,
+        p_net_path,
+    )
+    quit()
+
     (obs_1_, obs_2_, n_obs_1_, n_obs_2_), _ = env.reset()
     obs_1 = torch.from_numpy(obs_1_).float()
     obs_2 = torch.from_numpy(obs_2_).float()
