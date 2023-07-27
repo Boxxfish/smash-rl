@@ -5,7 +5,7 @@ use smash_rl_rust::training::{RetrievalContext, PCA};
 fn main() {
     let encoder = tch::jit::CModule::load("temp/encoder.ptc").unwrap();
     let pca = PCA::load("temp/pca.json");
-    let retrieval_ctx = RetrievalContext::new(
+    RetrievalContext::new(
         128,
         "temp/index.bin",
         "temp/generated",

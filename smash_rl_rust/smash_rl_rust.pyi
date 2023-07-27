@@ -60,6 +60,7 @@ class RolloutContext:
         num_frames: int,
         time_limit: int,
         first_bot_path: str,
+        top_k: int,
     ) -> None: ...
     def rollout(
         self,

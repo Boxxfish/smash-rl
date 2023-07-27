@@ -1,6 +1,7 @@
 use std::sync::{Arc, RwLock};
 
 use hora::core::ann_index::{ANNIndex, SerializableIndex};
+use ndarray::prelude::*;
 use pyo3::prelude::*;
 use pyo3_tch::PyTensor;
 use rand::Rng;
@@ -120,13 +121,7 @@ pub struct VecEnv {
     pub num_envs: usize,
 }
 
-type VecEnvOutput = (
-    Vec<Tensor>,
-    Vec<f32>,
-    Vec<bool>,
-    Vec<bool>,
-    Vec<MFEnvInfo>,
-);
+type VecEnvOutput = (Vec<Tensor>, Vec<f32>, Vec<bool>, Vec<bool>, Vec<MFEnvInfo>);
 
 impl VecEnv {
     pub fn new(envs: Vec<MFEnv>) -> Self {
@@ -138,7 +133,7 @@ impl VecEnv {
 
     pub fn step(&mut self, actions: &[u32]) -> VecEnvOutput {
         let _guard = tch::no_grad_guard();
-        let mut obs_vec: Vec<_> = (0..2).map(|_| Vec::with_capacity(self.num_envs)).collect();
+        let mut obs_vec: Vec<_> = (0..4).map(|_| Vec::with_capacity(self.num_envs)).collect();
         let mut rewards = Vec::with_capacity(self.num_envs);
         let mut dones = Vec::with_capacity(self.num_envs);
         let mut truncs = Vec::with_capacity(self.num_envs);
@@ -164,13 +159,16 @@ impl VecEnv {
             }
         }
 
-        let observations = obs_vec.iter().map(|obs_vec| Tensor::stack(&obs_vec, 0)).collect();
+        let observations = obs_vec
+            .iter()
+            .map(|obs_vec| Tensor::stack(obs_vec, 0))
+            .collect();
         (observations, rewards, dones, truncs, infos)
     }
 
     pub fn reset(&mut self) -> Vec<Tensor> {
         let _guard = tch::no_grad_guard();
-        let mut obs_vec: Vec<_> = (0..2).map(|_| Vec::with_capacity(self.num_envs)).collect();
+        let mut obs_vec: Vec<_> = (0..4).map(|_| Vec::with_capacity(self.num_envs)).collect();
 
         for i in 0..self.num_envs {
             let (obs, _) = self.envs[i].reset();
@@ -179,7 +177,10 @@ impl VecEnv {
             }
         }
 
-        obs_vec.iter().map(|obs_vec| Tensor::stack(&obs_vec, 0)).collect()
+        obs_vec
+            .iter()
+            .map(|obs_vec| Tensor::stack(obs_vec, 0))
+            .collect()
     }
 }
 
@@ -199,17 +200,29 @@ impl WorkerContext {
         max_skip_frames: u32,
         num_frames: u32,
         time_limit: u32,
+        top_k: u32,
+        retrieval_ctx: Arc<RwLock<RetrievalContext>>,
     ) -> Self {
         let mut env = VecEnv::new(
             (0..num_envs)
-                .map(|_| MFEnv::new(max_skip_frames, num_frames, false, (0, 0, 0), time_limit))
+                .map(|_| {
+                    MFEnv::new(
+                        max_skip_frames,
+                        num_frames,
+                        false,
+                        (0, 0, 0),
+                        time_limit,
+                        top_k,
+                        retrieval_ctx.clone(),
+                    )
+                })
                 .collect(),
         );
         let last_obs = env.reset();
-        let (state_shape_1, state_shape_2) = env.envs[0].observation_space;
+        let state_shape = &env.envs[0].observation_space;
         let action_count = env.envs[0].action_space as i64;
         let rollout_buffer = RolloutBuffer::new(
-            &[&state_shape_1, &state_shape_2],
+            &state_shape.iter().map(|s| s.as_slice()).collect::<Vec<_>>(),
             &[1],
             &[action_count],
             tch::Kind::Int,
@@ -232,6 +245,7 @@ impl WorkerContext {
 pub struct RolloutContext {
     w_ctxs: Vec<WorkerContext>,
     bot_nets: Vec<tch::CModule>,
+    retrieval_ctx: Arc<RwLock<RetrievalContext>>,
 }
 
 #[pymethods]
@@ -246,7 +260,21 @@ impl RolloutContext {
         num_frames: u32,
         time_limit: u32,
         first_bot_path: &str,
+        top_k: u32,
     ) -> Self {
+        // Set up retrieval context
+        let encoder = tch::jit::CModule::load("temp/encoder.ptc").unwrap();
+        let pca = PCA::load("temp/pca.json");
+        let retrieval_ctx = Arc::new(RwLock::new(RetrievalContext::new(
+            128,
+            "temp/index.bin",
+            "temp/generated",
+            "temp/episode_data.json",
+            encoder,
+            pca,
+        )));
+
+        // Create worker contexts
         let envs_per_worker = total_num_envs / num_workers;
         let w_ctxs = (0..num_workers)
             .map(|_| {
@@ -256,11 +284,19 @@ impl RolloutContext {
                     max_skip_frames,
                     num_frames,
                     time_limit,
+                    top_k,
+                    retrieval_ctx.clone(),
                 )
             })
             .collect();
+
         let bot_nets = vec![tch::CModule::load(first_bot_path).expect("Couldn't load module.")];
-        Self { w_ctxs, bot_nets }
+
+        Self {
+            w_ctxs,
+            bot_nets,
+            retrieval_ctx,
+        }
     }
 
     /// Performs one iteration of the rollout process.
@@ -296,10 +332,8 @@ impl RolloutContext {
                 for _ in 0..w_ctx.num_steps {
                     // Choose bot action
                     for (env_index, env_) in w_ctx.env.envs.iter_mut().enumerate() {
-                        let bot_obs: Vec<_> = env_.bot_obs()
-                            .iter()
-                            .map(|t| t.unsqueeze(0))
-                            .collect();
+                        let bot_obs: Vec<_> =
+                            env_.bot_obs().iter().map(|t| t.to_kind(tch::Kind::Float).unsqueeze(0)).collect();
                         let bot_action_probs = bot_nets.read().unwrap()[w_ctx.bot_ids[env_index]]
                             .forward_ts(&bot_obs)
                             .unwrap();
@@ -308,6 +342,7 @@ impl RolloutContext {
                     }
 
                     // Choose player action
+                    obs = obs.iter().map(|o| o.to_kind(tch::Kind::Float)).collect();
                     let action_probs = p_net.forward_ts(&obs).unwrap();
                     let actions = sample(&action_probs);
 
@@ -358,14 +393,18 @@ impl RolloutContext {
         self.bot_nets.append(bot_nets.write().as_mut().unwrap());
 
         // Copy the contents of each rollout buffer
-        let state_buffers = (0..self.w_ctxs[0].rollout_buffer.states.len()).map(|i| PyTensor(Tensor::concatenate(
-            &self
-                .w_ctxs
-                .iter()
-                .map(|w_ctx| &w_ctx.rollout_buffer.states[i])
-                .collect::<Vec<&Tensor>>(),
-            1,
-        ))).collect();
+        let state_buffers = (0..self.w_ctxs[0].rollout_buffer.states.len())
+            .map(|i| {
+                PyTensor(Tensor::concatenate(
+                    &self
+                        .w_ctxs
+                        .iter()
+                        .map(|w_ctx| &w_ctx.rollout_buffer.states[i])
+                        .collect::<Vec<&Tensor>>(),
+                    1,
+                ))
+            })
+            .collect();
         let act_buffer = Tensor::concatenate(
             &self
                 .w_ctxs
@@ -474,8 +513,8 @@ struct PCAData {
 
 /// Performs PCA.
 pub struct PCA {
-    basis: Tensor,
-    mean: Tensor,
+    basis: Array2<f32>,
+    mean: Array1<f32>,
 }
 
 impl PCA {
@@ -484,22 +523,25 @@ impl PCA {
         let file = std::fs::File::open(path).unwrap();
         let reader = std::io::BufReader::new(file);
         let data: PCAData = serde_json::from_reader(reader).unwrap();
-        let basis = Tensor::stack(
-            &data
-                .basis
-                .iter()
-                .map(|b| Tensor::from_slice(b))
-                .collect::<Vec<Tensor>>(),
-            0,
-        );
-        let mean = Tensor::from_slice(&data.mean);
+        let basis = data
+        .basis
+        .iter()
+        .map(|b| arr1(&b.clone()))
+        .collect::<Vec<_>>();
+        let basis = ndarray::stack(
+            Axis(0),
+            &basis.iter().map(|b| b.view()).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let mean = arr1(&data.mean);
         Self { basis, mean }
     }
 
     /// Given a tensor of (batch_size, a), returns (batch_size, b).
     /// Based on the Scikit-learn implementation.
     pub fn transform(&self, data: &Tensor) -> Tensor {
-        (data - &self.mean).dot(&self.basis.t_copy())
+        (data - Tensor::try_from(&self.mean).unwrap().unsqueeze(0).repeat([data.size()[0], 1]))
+            .matmul(&Tensor::try_from(&self.basis).unwrap().t_copy())
     }
 }
 
@@ -515,8 +557,8 @@ pub struct RetrievalContext {
     pca: PCA,
     index: hora::index::hnsw_idx::HNSWIndex<f32, usize>,
     key_dim: usize,
-    data_spatial: Tensor,
-    data_scalar: Tensor,
+    data_spatial: ArrayD<f64>,
+    data_scalar: ArrayD<f64>,
 }
 
 impl RetrievalContext {
@@ -559,7 +601,7 @@ impl RetrievalContext {
                 "{generated_dir}/{i}_data_scalar.npy"
             )));
         }
-        let data_spatial = Tensor::concatenate(&data_spatial, 0);
+        let data_spatial = Tensor::concatenate(&data_spatial, 0).as_ref().try_into().unwrap();
         let data_scalar = Tensor::concatenate(&data_scalar, 0);
         let extra_scalar = Tensor::zeros(
             [data_scalar.size()[0], 1],
@@ -570,7 +612,10 @@ impl RetrievalContext {
                 &(Tensor::scalar_tensor(player_won as f64, (tch::Kind::Float, tch::Device::Cpu))),
             );
         }
-        let data_scalar = Tensor::concatenate(&[data_scalar, extra_scalar], 1);
+        let data_scalar: ArrayD<f64> = Tensor::concatenate(&[data_scalar, extra_scalar], 1)
+            .as_ref()
+            .try_into()
+            .unwrap();
 
         Self {
             encoder,
@@ -582,21 +627,14 @@ impl RetrievalContext {
         }
     }
 
-    fn search(&self, key: &[f32], top_k: usize) -> (Tensor, Tensor) {
-        let indices = Tensor::from_slice(
-            &self
-                .index
-                .search(key, top_k)
-                .iter()
-                .map(|e| *e as i64)
-                .collect::<Vec<_>>(),
-        );
-        let results_spatial = self.data_spatial.index_select(0, &indices);
-        let results_scalar = self.data_scalar.index_select(0, &indices);
-        (results_spatial, results_scalar)
+    pub fn search(&self, key: &[f32], top_k: usize) -> (Tensor, Tensor) {
+        let indices = &self.index.search(key, top_k);
+        let results_spatial = self.data_spatial.select(Axis(0), indices);
+        let results_scalar = self.data_scalar.select(Axis(0), indices);
+        (results_spatial.try_into().unwrap(), results_scalar.try_into().unwrap())
     }
 
-    fn search_from_obs(&self, spatial: &Tensor, stats: &Tensor, top_k: usize) -> (Tensor, Tensor) {
+    pub fn search_from_obs(&self, spatial: &Tensor, stats: &Tensor, top_k: usize) -> (Tensor, Tensor) {
         let _guard = tch::no_grad_guard();
         let encoded = self
             .encoder
@@ -606,7 +644,7 @@ impl RetrievalContext {
             ])
             .unwrap();
         let key = self.pca.transform(&encoded).squeeze();
-        let mut key_data = Vec::with_capacity(self.key_dim);
+        let mut key_data = vec![0.0; self.key_dim];
         key.copy_data(&mut key_data, key.size()[0] as usize);
         self.search(&key_data, top_k)
     }

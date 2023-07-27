@@ -1,4 +1,6 @@
-use crate::micro_fighter::{MicroFighter, StepOutput};
+use std::sync::{Arc, RwLock};
+
+use crate::{micro_fighter::{MicroFighter, StepOutput}, training::RetrievalContext};
 use buffer_graphics_lib::prelude::*;
 use minifb::{Window, WindowOptions};
 use tch::Tensor;
@@ -21,7 +23,7 @@ struct RenderState {
 /// Rust version of the Micro Fighter environment.
 pub struct MFEnv {
     pub game: MicroFighter,
-    pub observation_space: ([i64; 4], [i64; 1]),
+    pub observation_space: Vec<Vec<i64>>,
     pub action_space: i32,
     pub player_stats: tch::Tensor,
     pub bot_stats: tch::Tensor,
@@ -36,6 +38,8 @@ pub struct MFEnv {
     pub view_channels: (u32, u32, u32),
     pub time_limit: u32,
     pub current_time: u32,
+    pub top_k: u32,
+    pub retrieval_ctx: Arc<RwLock<RetrievalContext>>,
 }
 
 pub struct MFEnvInfo {
@@ -48,20 +52,24 @@ impl MFEnv {
         num_frames: u32,
         rendering: bool,
         view_channels: (u32, u32, u32),
-        time_limit: u32
+        time_limit: u32,
+        top_k: u32,
+        retrieval_ctx: Arc<RwLock<RetrievalContext>>,
     ) -> Self {
         let options = (tch::Kind::Float, tch::Device::Cpu);
         let game = MicroFighter::new(false);
         let num_channels = 4;
-        let observation_space = (
-            [
+        let observation_space = vec![
+            vec![
                 num_frames as i64,
                 num_channels as i64,
                 IMG_SIZE as i64,
                 IMG_SIZE as i64,
             ],
-            [36],
-        );
+            vec![36],
+            vec![top_k as i64, 16, IMG_SIZE as i64, IMG_SIZE as i64],
+            vec![top_k as i64, 181],
+        ];
         let action_space = 9;
         let player_stats = Tensor::zeros([18], options);
         let bot_stats = Tensor::zeros([18], options);
@@ -115,6 +123,8 @@ impl MFEnv {
             view_channels,
             time_limit,
             current_time,
+            top_k,
+            retrieval_ctx,
         }
     }
 
@@ -180,8 +190,14 @@ impl MFEnv {
         self.current_time += 1;
         let truncated = self.current_time >= self.time_limit;
 
+        let spatial = Tensor::stack(&self.player_frame_stack, 0);
+        let stats = stats_obs;
+        let (neighbor_spatial, neighbor_scalar) = self.retrieval_ctx.read().unwrap().search_from_obs(
+            &spatial, &stats, self.top_k as usize
+        );
+
         (
-            vec![Tensor::stack(&self.player_frame_stack, 0), stats_obs],
+            vec![spatial, stats, neighbor_spatial, neighbor_scalar],
             reward,
             terminated,
             truncated,
@@ -241,9 +257,15 @@ impl MFEnv {
 
         self.last_dist = step_output.player_pos.0.pow(2) as f32 / 200_u32.pow(2) as f32;
         self.current_time = 0;
+        
+        let spatial = Tensor::stack(&self.player_frame_stack, 0);
+        let stats = stats_obs;
+        let (neighbor_spatial, neighbor_scalar) = self.retrieval_ctx.read().unwrap().search_from_obs(
+            &spatial, &stats, self.top_k as usize
+        );
 
         (
-            vec![Tensor::stack(&self.player_frame_stack, 0), stats_obs],
+            vec![spatial, stats, neighbor_spatial, neighbor_scalar],
             MFEnvInfo { player_won: false },
         )
     }
@@ -331,10 +353,13 @@ impl MFEnv {
     }
 
     pub fn bot_obs(&self) -> Vec<Tensor> {
-        vec![
-            Tensor::stack(&self.bot_frame_stack, 0),
-            Tensor::concatenate(&[self.bot_stats.copy(), self.player_stats.copy()], 0),
-        ]
+        let spatial = Tensor::stack(&self.bot_frame_stack, 0);
+        let stats = Tensor::concatenate(&[self.bot_stats.copy(), self.player_stats.copy()], 0);
+        let (neighbor_spatial, neighbor_scalar) = self.retrieval_ctx.read().unwrap().search_from_obs(
+            &spatial, &stats, self.top_k as usize
+        );
+
+        vec![spatial, stats, neighbor_spatial, neighbor_scalar]
     }
 
     pub fn bot_step(&mut self, action: u32) {

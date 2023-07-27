@@ -113,7 +113,9 @@ class NeighborEncoder(nn.Module):
         spatial = torch.max(torch.max(spatial, dim=3).values, dim=2).values
 
         scalar = torch.flatten(
-            torch.concatenate([scalar, obs_embedding.unsqueeze(1).repeat([1, k, 1])], 2),
+            torch.concatenate(
+                [scalar, obs_embedding.unsqueeze(1).repeat([1, k, 1])], 2
+            ),
             0,
             1,
         )
@@ -181,7 +183,9 @@ class ValueNet(nn.Module):
     ):
         nn.Module.__init__(self)
         self.shared = SharedNet(obs_shape_spatial, obs_shape_stats)
-        self.neighbor = NeighborEncoder(512, neighbor_shape_spatial, neighbor_shape_scalar)
+        self.neighbor = NeighborEncoder(
+            512, neighbor_shape_spatial, neighbor_shape_scalar
+        )
         self.net = nn.Sequential(
             nn.Linear(1024, 512),
             nn.ReLU(),
@@ -216,7 +220,9 @@ class PolicyNet(nn.Module):
     ):
         nn.Module.__init__(self)
         self.shared = SharedNet(obs_shape_spatial, obs_shape_stats)
-        self.neighbor = NeighborEncoder(512, neighbor_shape_spatial, neighbor_shape_scalar)
+        self.neighbor = NeighborEncoder(
+            512, neighbor_shape_spatial, neighbor_shape_scalar
+        )
         self.net = nn.Sequential(
             nn.Linear(1024, 512),
             nn.ReLU(),
@@ -403,6 +409,7 @@ if __name__ == "__main__":
     bot_nets = [copy.deepcopy(p_net)]
     bot_p_indices = [0 for _ in range(num_envs)]
     current_elo = start_elo
+    bot_net_path = "temp/training/bot_p_net.ptc"
 
     buffer_spatial = RolloutBuffer(
         torch.Size(spatial_obs_space.shape),
@@ -443,100 +450,45 @@ if __name__ == "__main__":
         num_frames,
         time_limit,
         p_net_path,
+        top_k,
     )
-    quit()
 
-    (obs_1_, obs_2_, n_obs_1_, n_obs_2_), _ = env.reset()
-    obs_1 = torch.from_numpy(obs_1_).float()
-    obs_2 = torch.from_numpy(obs_2_).float()
-    n_obs_1 = torch.from_numpy(n_obs_1_).float()
-    n_obs_2 = torch.from_numpy(n_obs_2_).float()
     for step in tqdm(range(iterations), position=0):
         percent_done = step / iterations
-        for env_ in env.envs:
-            assert isinstance(env_, TimeLimit)
-            assert isinstance(env_.env, NormalizeReward)
-            assert isinstance(env_.env.env, RetrievalMFEnv)
-            env_.env.set_dmg_reward_amount(1.0 - percent_done)
+        rollout_context.set_expl_reward_amount(1.0 - percent_done)
 
         # Collect experience
-        with torch.no_grad():
-            total_entropy = 0.0
-            for _ in tqdm(range(train_steps), position=1):
-                # Choose bot action
-                for env_index, env_ in enumerate(env.envs):
-                    assert isinstance(env_, TimeLimit)
-                    assert isinstance(env_.env, NormalizeReward)
-                    assert isinstance(env_.env.env, RetrievalMFEnv)
-                    (
-                        bot_obs_1,
-                        bot_obs_2,
-                        bot_n_obs_1,
-                        bot_n_obs_2,
-                    ) = env_.env.env.bot_obs()
-                    bot_action_probs = bot_nets[bot_p_indices[env_index]](
-                        torch.from_numpy(bot_obs_1).float().unsqueeze(0),
-                        torch.from_numpy(bot_obs_2).float().unsqueeze(0),
-                        torch.from_numpy(bot_n_obs_1).float().unsqueeze(0),
-                        torch.from_numpy(bot_n_obs_2).float().unsqueeze(0),
-                    ).squeeze(0)
-                    bot_action = Categorical(logits=bot_action_probs).sample().item()
-                    env_.env.bot_step(bot_action)
-
-                # Choose player action
-                action_probs = p_net(obs_1, obs_2, n_obs_1, n_obs_2)
-                action_distr = Categorical(logits=action_probs)
-                total_entropy += action_distr.entropy().mean()
-                actions = action_distr.sample().numpy()
-
-                try:
-                    (
-                        (obs_1_, obs_2_, n_obs_1_, n_obs_2_),
-                        rewards,
-                        dones,
-                        truncs,
-                        _,
-                    ) = env.step(actions)
-                    buffer_spatial.insert_step(
-                        obs_1,
-                        torch.from_numpy(actions).unsqueeze(1),
-                        action_probs,
-                        list(rewards),
-                        list(dones),
-                        list(truncs),
-                        None,
-                    )
-                    buffer_stats.insert_step(obs_2)
-                    buffer_n_spatial.insert_step(n_obs_1)
-                    buffer_n_scalar.insert_step(n_obs_2)
-                    obs_1 = torch.from_numpy(obs_1_).float()
-                    obs_2 = torch.from_numpy(obs_2_).float()
-                    n_obs_1 = torch.from_numpy(n_obs_1_).float()
-                    n_obs_2 = torch.from_numpy(n_obs_2_).float()
-
-                    # Change opponent when environment ends
-                    for env_index, env_ in enumerate(env.envs):
-                        if dones[env_index] or truncs[env_index]:
-                            state_dict = random.choice(bot_data)["state_dict"]
-                            assert isinstance(state_dict, Mapping)
-                            bot_p_indices[env_index] = random.randrange(
-                                0, len(bot_data)
-                            )
-                            bot_nets[bot_p_indices[env_index]].load_state_dict(
-                                state_dict
-                            )
-
-                except KeyboardInterrupt:
-                    quit()
-                except Exception as e:
-                    print(f"Exception in simulation: {e}. Resetting.")
-                    (obs_1_, obs_2_, n_obs_1_, n_obs_2_), _ = env.reset()
-                    obs_1 = torch.from_numpy(obs_1_).float()
-                    obs_2 = torch.from_numpy(obs_2_).float()
-                    n_obs_1 = torch.from_numpy(n_obs_1_).float()
-                    n_obs_2 = torch.from_numpy(n_obs_2_).float()
-        buffer_spatial.insert_final_step(obs_1)
-        buffer_stats.insert_final_step(obs_2)
+        print("Performing rollouts...", end="")
+        curr_time = time.time()
+        traced = torch.jit.trace(
+            p_net,
+            (
+                torch.from_numpy(sample_input[0]).unsqueeze(0),
+                torch.from_numpy(sample_input[1]).unsqueeze(0),
+                torch.from_numpy(sample_input[2]).unsqueeze(0),
+                torch.from_numpy(sample_input[3]).unsqueeze(0),
+            ),
+        )
+        traced.save(p_net_path)
+        (
+            (obs_1_buf, obs_2_buf, obs_3_buf, obs_4_buf),
+            act_buf,
+            act_probs_buf,
+            reward_buf,
+            done_buf,
+            trunc_buf,
+            avg_entropy,
+        ) = rollout_context.rollout(p_net_path)
+        buffer_spatial.states.copy_(obs_1_buf)
+        buffer_stats.states.copy_(obs_2_buf)
+        buffer_n_spatial.states.copy_(obs_3_buf)
+        buffer_n_scalar.states.copy_(obs_4_buf)
+        buffer_spatial.actions.copy_(act_buf)
+        buffer_spatial.action_probs.copy_(act_probs_buf)
+        buffer_spatial.rewards.copy_(reward_buf)
+        buffer_spatial.dones.copy_(done_buf)
+        buffer_spatial.truncs.copy_(trunc_buf)
+        print(f" took {time.time() - curr_time} seconds.")
 
         # Train
         total_p_loss, total_v_loss = train_ppo(
@@ -660,7 +612,7 @@ if __name__ == "__main__":
             {
                 "avg_v_loss": total_v_loss / train_iters,
                 "avg_p_loss": total_p_loss / train_iters,
-                "entropy": total_entropy / (num_envs * train_iters),
+                "entropy": avg_entropy,
             }
         )
 
@@ -671,6 +623,17 @@ if __name__ == "__main__":
                     {"state_dict": p_net.state_dict(), "elo": int(current_elo)}
                 )
                 bot_nets.append(copy.deepcopy(p_net))
+                traced = torch.jit.trace(
+                    p_net,
+                    (
+                        torch.from_numpy(sample_input[0]).unsqueeze(0),
+                        torch.from_numpy(sample_input[1]).unsqueeze(0),
+                        torch.from_numpy(sample_input[2]).unsqueeze(0),
+                        torch.from_numpy(sample_input[3]).unsqueeze(0),
+                    ),
+                )
+                traced.save(bot_net_path)
+                rollout_context.push_bot(bot_net_path)
             else:
                 # Replace bot with lowest ELO if that ELO is less than the current ELO
                 next_bot_index = 0
@@ -685,6 +648,17 @@ if __name__ == "__main__":
                         "elo": int(current_elo),
                     }
                     bot_nets[next_bot_index].load_state_dict(p_net.state_dict())
+                    traced = torch.jit.trace(
+                        p_net,
+                        (
+                            torch.from_numpy(sample_input[0]).unsqueeze(0),
+                            torch.from_numpy(sample_input[1]).unsqueeze(0),
+                            torch.from_numpy(sample_input[2]).unsqueeze(0),
+                            torch.from_numpy(sample_input[3]).unsqueeze(0),
+                        ),
+                    )
+                    traced.save(bot_net_path)
+                    rollout_context.insert_bot(bot_net_path, next_bot_index)
 
         torch.save(p_net.state_dict(), "temp/p_net_retrieval.pt")
         torch.save(v_net.state_dict(), "temp/v_net_retrieval.pt")

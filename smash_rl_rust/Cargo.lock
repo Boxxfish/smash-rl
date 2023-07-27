@@ -3784,6 +3784,7 @@ dependencies = [
  "buffer-graphics-lib",
  "hora",
  "minifb",
+ "ndarray",
  "npyz",
  "pyo3",
  "pyo3-tch",
