@@ -405,6 +405,17 @@ if __name__ == "__main__":
             ),
         )
         traced.save("temp/encoder.ptc")
+
+        # Unpickle PCA and save as JSON
+        with open("temp/pca.pkl", "rb") as rfile:
+            pca = pickle.load(rfile)
+            assert isinstance(pca, PCA)
+        pca_data = {
+            "basis": [component.tolist() for component in pca.components_],
+            "mean": pca.mean_.tolist()
+        }
+        with open("temp/pca.json", "w") as wfile:
+            json.dump(pca_data, wfile)
         quit()
 
     # If setting up PCA, train a PCA model

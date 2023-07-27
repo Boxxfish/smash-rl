@@ -1,9 +1,11 @@
 use std::sync::{Arc, RwLock};
 
+use hora::core::ann_index::{ANNIndex, SerializableIndex};
 use pyo3::prelude::*;
 use pyo3_tch::PyTensor;
 use rand::Rng;
-use tch::{nn::Module, Tensor};
+use serde::Deserialize;
+use tch::Tensor;
 use weighted_rand::builder::{NewBuilder, WalkerTableBuilder};
 
 use crate::env::{MFEnv, MFEnvInfo};
@@ -86,7 +88,6 @@ impl RolloutBuffer {
         dones: &[bool],
         truncs: &[bool],
     ) {
-        let d = tch::Device::Cpu;
         let _guard = tch::no_grad_guard();
         self.states_1.get(self.next).copy_(states_1);
         self.states_2.get(self.next).copy_(states_2);
@@ -259,6 +260,18 @@ impl RolloutContext {
             })
             .collect();
         let bot_nets = vec![tch::CModule::load(first_bot_path).expect("Couldn't load module.")];
+
+        let encoder = tch::jit::CModule::load("temp/encoder.ptc").unwrap();
+        let pca = PCA::load("temp/pca.json");
+        let retrieval_ctx = RetrievalContext::new(
+            128,
+            "temp/index.bin",
+            "temp/generated",
+            "temp/episode_data.json",
+            encoder,
+            pca,
+        );
+
         Self { w_ctxs, bot_nets }
     }
 
@@ -282,7 +295,7 @@ impl RolloutContext {
             Arc::new(tch::CModule::load(latest_policy_path).expect("Couldn't load module."));
         let mut bot_nets = Vec::new();
         bot_nets.append(&mut self.bot_nets);
-        let mut bot_nets = Arc::new(RwLock::new(bot_nets));
+        let bot_nets = Arc::new(RwLock::new(bot_nets));
 
         let mut handles = Vec::new();
         for mut w_ctx in self.w_ctxs.drain(0..self.w_ctxs.len()) {
@@ -332,7 +345,7 @@ impl RolloutContext {
                     );
 
                     // Change opponent when environment ends
-                    for (env_index, env_) in w_ctx.env.envs.iter().enumerate() {
+                    for env_index in 0..w_ctx.env.num_envs {
                         if dones[env_index] || truncs[env_index] {
                             w_ctx.bot_ids[env_index] =
                                 rng.gen_range(0..bot_nets.read().unwrap().len());
@@ -474,4 +487,160 @@ fn sample(logits: &Tensor) -> Vec<u32> {
     }
 
     generated_samples
+}
+
+#[derive(Deserialize)]
+struct PCAData {
+    basis: Vec<Vec<f32>>,
+    mean: Vec<f32>,
+}
+
+/// Performs PCA.
+pub struct PCA {
+    basis: Tensor,
+    mean: Tensor,
+}
+
+impl PCA {
+    /// Loads PCA data from a file.
+    pub fn load(path: &str) -> Self {
+        let file = std::fs::File::open(path).unwrap();
+        let reader = std::io::BufReader::new(file);
+        let data: PCAData = serde_json::from_reader(reader).unwrap();
+        let basis = Tensor::stack(
+            &data
+                .basis
+                .iter()
+                .map(|b| Tensor::from_slice(b))
+                .collect::<Vec<Tensor>>(),
+            0,
+        );
+        let mean = Tensor::from_slice(&data.mean);
+        Self { basis, mean }
+    }
+
+    /// Given a tensor of (batch_size, a), returns (batch_size, b).
+    /// Based on the Scikit-learn implementation.
+    pub fn transform(&self, data: &Tensor) -> Tensor {
+        (data - &self.mean).dot(&self.basis.t_copy())
+    }
+}
+
+#[derive(Deserialize)]
+struct EpisodeData {
+    pub player_won: f32,
+    pub traj_in_episode: Vec<usize>,
+}
+
+/// Central location for data needed for retrieval.
+pub struct RetrievalContext {
+    encoder: tch::CModule,
+    pca: PCA,
+    index: hora::index::hnsw_idx::HNSWIndex<f32, usize>,
+    key_dim: usize,
+    data_spatial: Tensor,
+    data_scalar: Tensor,
+}
+
+impl RetrievalContext {
+    pub fn new(
+        key_dim: usize,
+        index_path: &str,
+        generated_dir: &str,
+        episode_data_path: &str,
+        encoder: tch::CModule,
+        pca: PCA,
+    ) -> Self {
+        // Load index
+        let mut index = hora::index::hnsw_idx::HNSWIndex::<f32, usize>::load(index_path).unwrap();
+        index
+            .build(hora::core::metrics::Metric::DotProduct)
+            .unwrap();
+
+        // Set up episode data
+        let mut traj_data = Vec::new();
+        let file = std::fs::File::open(episode_data_path).unwrap();
+        let reader = std::io::BufReader::new(file);
+        let episode_data: Vec<EpisodeData> = serde_json::from_reader(reader).unwrap();
+        for data in episode_data {
+            let traj_in_episode = data.traj_in_episode.len();
+            for _ in 0..traj_in_episode {
+                traj_data.push(data.player_won);
+            }
+        }
+
+        // Load trajectory data
+        let data_path = std::fs::read_dir(generated_dir).unwrap();
+        let file_count = data_path.count() / 2;
+        let mut data_spatial = Vec::with_capacity(file_count);
+        let mut data_scalar = Vec::with_capacity(file_count);
+        for i in 0..file_count {
+            data_spatial.push(load_npy_as_tensor(&format!(
+                "{generated_dir}/{i}_data_spatial.npy"
+            )));
+            data_scalar.push(load_npy_as_tensor(&format!(
+                "{generated_dir}/{i}_data_scalar.npy"
+            )));
+        }
+        let data_spatial = Tensor::concatenate(&data_spatial, 0);
+        let data_scalar = Tensor::concatenate(&data_scalar, 0);
+        let extra_scalar = Tensor::zeros(
+            [data_scalar.size()[0], 1],
+            (tch::Kind::Float, tch::Device::Cpu),
+        );
+        for (i, &player_won) in traj_data.iter().enumerate() {
+            extra_scalar.get(i as i64).get(0).set_data(
+                &(Tensor::scalar_tensor(player_won as f64, (tch::Kind::Float, tch::Device::Cpu))),
+            );
+        }
+        let data_scalar = Tensor::concatenate(&[data_scalar, extra_scalar], 1);
+
+        Self {
+            encoder,
+            pca,
+            index,
+            key_dim,
+            data_spatial,
+            data_scalar,
+        }
+    }
+
+    fn search(&self, key: &[f32], top_k: usize) -> (Tensor, Tensor) {
+        let indices = Tensor::from_slice(
+            &self
+                .index
+                .search(key, top_k)
+                .iter()
+                .map(|e| *e as i64)
+                .collect::<Vec<_>>(),
+        );
+        let results_spatial = self.data_spatial.index_select(0, &indices);
+        let results_scalar = self.data_scalar.index_select(0, &indices);
+        (results_spatial, results_scalar)
+    }
+
+    fn search_from_obs(&self, spatial: &Tensor, stats: &Tensor, top_k: usize) -> (Tensor, Tensor) {
+        let _guard = tch::no_grad_guard();
+        let encoded = self
+            .encoder
+            .forward_ts(&[
+                spatial.unsqueeze(0).to_kind(tch::Kind::Float),
+                stats.unsqueeze(0).to_kind(tch::Kind::Float),
+            ])
+            .unwrap();
+        let key = self.pca.transform(&encoded).squeeze();
+        let mut key_data = Vec::with_capacity(self.key_dim);
+        key.copy_data(&mut key_data, key.size()[0] as usize);
+        self.search(&key_data, top_k)
+    }
+}
+
+/// Loads numpy data from a path.
+fn load_npy_as_tensor(path: &str) -> Tensor {
+    let file = std::fs::File::open(path).unwrap();
+    let reader = std::io::BufReader::new(file);
+    let np_file = npyz::NpyFile::new(reader).unwrap();
+    let shape = np_file.shape().to_vec();
+    let data: Vec<f32> = np_file.into_vec().unwrap();
+    Tensor::from_slice(&data).reshape(shape.iter().map(|e| *e as i64).collect::<Vec<_>>())
 }

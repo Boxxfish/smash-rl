@@ -4,7 +4,7 @@ mod move_states;
 mod character;
 mod hit;
 mod ml;
-mod training;
+pub mod training;
 
 use micro_fighter::*;
 use ml::GameState;
