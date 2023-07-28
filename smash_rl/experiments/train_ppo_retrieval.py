@@ -36,7 +36,7 @@ _: Any
 
 # Hyperparameters
 num_envs = 32  # Number of environments to step through at once during sampling.
-train_steps = 64  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
+train_steps = 128  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
 iterations = 1000  # Number of sample/train iterations.
 train_iters = 2  # Number of passes over the samples collected.
 train_batch_size = 128  # Minibatch size while training models.
@@ -52,7 +52,7 @@ bot_update = 20  # Number of iterations before caching the current policy.
 max_bots = 10  # Maximum number of bots to store.
 start_elo = 1200  # Starting ELO score for each agent.
 elo_k = 16  # ELO adjustment constant.
-eval_every = 2  # Number of iterations before evaluating.
+eval_every = 20  # Number of iterations before evaluating.
 eval_steps = 5  # Number of eval runs to perform.
 max_eval_steps = 500  # Max number of steps to take during each eval run.
 num_workers = 8
@@ -488,6 +488,7 @@ if __name__ == "__main__":
         buffer_spatial.rewards.copy_(reward_buf)
         buffer_spatial.dones.copy_(done_buf)
         buffer_spatial.truncs.copy_(trunc_buf)
+        del obs_1_buf, obs_2_buf, obs_3_buf, obs_4_buf, act_buf, act_probs_buf, reward_buf, done_buf, trunc_buf
         print(f" took {time.time() - curr_time} seconds.")
 
         # Train

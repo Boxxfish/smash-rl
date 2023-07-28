@@ -9,7 +9,7 @@ use serde::Deserialize;
 use tch::Tensor;
 use weighted_rand::builder::{NewBuilder, WalkerTableBuilder};
 
-use crate::env::{MFEnv, MFEnvInfo};
+use crate::env::{MFEnv, MFEnvInfo, IMG_SIZE};
 
 /// Loads a model using JIT.
 #[pyfunction]
@@ -133,7 +133,7 @@ impl VecEnv {
 
     pub fn step(&mut self, actions: &[u32]) -> VecEnvOutput {
         let _guard = tch::no_grad_guard();
-        let mut obs_vec: Vec<_> = (0..4).map(|_| Vec::with_capacity(self.num_envs)).collect();
+        let mut obs_vec: Vec<_> = (0..2).map(|_| Vec::with_capacity(self.num_envs)).collect();
         let mut rewards = Vec::with_capacity(self.num_envs);
         let mut dones = Vec::with_capacity(self.num_envs);
         let mut truncs = Vec::with_capacity(self.num_envs);
@@ -168,7 +168,7 @@ impl VecEnv {
 
     pub fn reset(&mut self) -> Vec<Tensor> {
         let _guard = tch::no_grad_guard();
-        let mut obs_vec: Vec<_> = (0..4).map(|_| Vec::with_capacity(self.num_envs)).collect();
+        let mut obs_vec: Vec<_> = (0..2).map(|_| Vec::with_capacity(self.num_envs)).collect();
 
         for i in 0..self.num_envs {
             let (obs, _) = self.envs[i].reset();
@@ -201,25 +201,23 @@ impl WorkerContext {
         num_frames: u32,
         time_limit: u32,
         top_k: u32,
-        retrieval_ctx: Arc<RwLock<RetrievalContext>>,
+        retrieval_ctx: &Arc<RwLock<RetrievalContext>>,
     ) -> Self {
         let mut env = VecEnv::new(
             (0..num_envs)
-                .map(|_| {
-                    MFEnv::new(
-                        max_skip_frames,
-                        num_frames,
-                        false,
-                        (0, 0, 0),
-                        time_limit,
-                        top_k,
-                        retrieval_ctx.clone(),
-                    )
-                })
+                .map(|_| MFEnv::new(max_skip_frames, num_frames, false, (0, 0, 0), time_limit))
                 .collect(),
         );
-        let last_obs = env.reset();
-        let state_shape = &env.envs[0].observation_space;
+        let last_obs = add_retrieval(env.reset(), top_k as usize, retrieval_ctx);
+        let state_shape = &[
+            env.envs[0].observation_space.as_slice(),
+            vec![
+                vec![top_k as i64, 16, IMG_SIZE as i64, IMG_SIZE as i64],
+                vec![top_k as i64, 181],
+            ]
+            .as_slice(),
+        ]
+        .concat();
         let action_count = env.envs[0].action_space as i64;
         let rollout_buffer = RolloutBuffer::new(
             &state_shape.iter().map(|s| s.as_slice()).collect::<Vec<_>>(),
@@ -246,6 +244,7 @@ pub struct RolloutContext {
     w_ctxs: Vec<WorkerContext>,
     bot_nets: Vec<tch::CModule>,
     retrieval_ctx: Arc<RwLock<RetrievalContext>>,
+    top_k: u32,
 }
 
 #[pymethods]
@@ -285,7 +284,7 @@ impl RolloutContext {
                     num_frames,
                     time_limit,
                     top_k,
-                    retrieval_ctx.clone(),
+                    &retrieval_ctx,
                 )
             })
             .collect();
@@ -296,6 +295,7 @@ impl RolloutContext {
             w_ctxs,
             bot_nets,
             retrieval_ctx,
+            top_k,
         }
     }
 
@@ -319,11 +319,13 @@ impl RolloutContext {
         let mut bot_nets = Vec::new();
         bot_nets.append(&mut self.bot_nets);
         let bot_nets = Arc::new(RwLock::new(bot_nets));
+        let top_k = self.top_k as usize;
 
         let mut handles = Vec::new();
         for mut w_ctx in self.w_ctxs.drain(0..self.w_ctxs.len()) {
             let p_net = p_net.clone();
             let bot_nets = bot_nets.clone();
+            let retrieval_ctx = self.retrieval_ctx.clone();
             let handle = std::thread::spawn(move || {
                 let _guard = tch::no_grad_guard();
                 let mut rng = rand::thread_rng();
@@ -332,10 +334,14 @@ impl RolloutContext {
                 for _ in 0..w_ctx.num_steps {
                     // Choose bot action
                     for (env_index, env_) in w_ctx.env.envs.iter_mut().enumerate() {
-                        let bot_obs: Vec<_> =
-                            env_.bot_obs().iter().map(|t| t.to_kind(tch::Kind::Float).unsqueeze(0)).collect();
+                        let bot_obs: Vec<_> = env_
+                            .bot_obs()
+                            .iter()
+                            .map(|t| t.to_kind(tch::Kind::Float).unsqueeze(0))
+                            .collect();
+                        let bot_obs = add_retrieval(bot_obs, top_k, &retrieval_ctx);
                         let bot_action_probs = bot_nets.read().unwrap()[w_ctx.bot_ids[env_index]]
-                            .forward_ts(&bot_obs)
+                            .forward_ts(&bot_obs.iter().map(|t| t.to_kind(tch::Kind::Float)).collect::<Vec<_>>())
                             .unwrap();
                         let bot_action = sample(&bot_action_probs)[0];
                         env_.bot_step(bot_action);
@@ -355,7 +361,7 @@ impl RolloutContext {
                     total_entropy += entropy.mean(tch::Kind::Float).double_value(&[]);
 
                     let (obs_, rewards, dones, truncs, _) = w_ctx.env.step(&actions);
-                    obs = obs_;
+                    obs = add_retrieval(obs_, top_k, &retrieval_ctx);
                     w_ctx.rollout_buffer.insert_step(
                         &obs,
                         &Tensor::from_slice(&actions.iter().map(|a| *a as i64).collect::<Vec<_>>())
@@ -485,6 +491,21 @@ impl RolloutContext {
     }
 }
 
+/// Adds retrieval info from an MFEnv observation.
+fn add_retrieval(
+    mut orig_obs: Vec<Tensor>,
+    top_k: usize,
+    retrieval_ctx: &Arc<RwLock<RetrievalContext>>,
+) -> Vec<Tensor> {
+    let n_obs = retrieval_ctx
+        .read()
+        .unwrap()
+        .search_from_obs(&orig_obs[0], &orig_obs[1], top_k);
+    orig_obs.push(n_obs.0);
+    orig_obs.push(n_obs.1);
+    orig_obs
+}
+
 /// Returns a list of actions given the probabilities.
 fn sample(logits: &Tensor) -> Vec<u32> {
     let num_samples = logits.size()[0];
@@ -524,15 +545,12 @@ impl PCA {
         let reader = std::io::BufReader::new(file);
         let data: PCAData = serde_json::from_reader(reader).unwrap();
         let basis = data
-        .basis
-        .iter()
-        .map(|b| arr1(&b.clone()))
-        .collect::<Vec<_>>();
-        let basis = ndarray::stack(
-            Axis(0),
-            &basis.iter().map(|b| b.view()).collect::<Vec<_>>(),
-        )
-        .unwrap();
+            .basis
+            .iter()
+            .map(|b| arr1(&b.clone()))
+            .collect::<Vec<_>>();
+        let basis =
+            ndarray::stack(Axis(0), &basis.iter().map(|b| b.view()).collect::<Vec<_>>()).unwrap();
         let mean = arr1(&data.mean);
         Self { basis, mean }
     }
@@ -540,8 +558,12 @@ impl PCA {
     /// Given a tensor of (batch_size, a), returns (batch_size, b).
     /// Based on the Scikit-learn implementation.
     pub fn transform(&self, data: &Tensor) -> Tensor {
-        (data - Tensor::try_from(&self.mean).unwrap().unsqueeze(0).repeat([data.size()[0], 1]))
-            .matmul(&Tensor::try_from(&self.basis).unwrap().t_copy())
+        (data
+            - Tensor::try_from(&self.mean)
+                .unwrap()
+                .unsqueeze(0)
+                .repeat([data.size()[0], 1]))
+        .matmul(&Tensor::try_from(&self.basis).unwrap().t_copy())
     }
 }
 
@@ -601,7 +623,10 @@ impl RetrievalContext {
                 "{generated_dir}/{i}_data_scalar.npy"
             )));
         }
-        let data_spatial = Tensor::concatenate(&data_spatial, 0).as_ref().try_into().unwrap();
+        let data_spatial = Tensor::concatenate(&data_spatial, 0)
+            .as_ref()
+            .try_into()
+            .unwrap();
         let data_scalar = Tensor::concatenate(&data_scalar, 0);
         let extra_scalar = Tensor::zeros(
             [data_scalar.size()[0], 1],
@@ -631,22 +656,39 @@ impl RetrievalContext {
         let indices = &self.index.search(key, top_k);
         let results_spatial = self.data_spatial.select(Axis(0), indices);
         let results_scalar = self.data_scalar.select(Axis(0), indices);
-        (results_spatial.try_into().unwrap(), results_scalar.try_into().unwrap())
+        (
+            results_spatial.try_into().unwrap(),
+            results_scalar.try_into().unwrap(),
+        )
     }
 
-    pub fn search_from_obs(&self, spatial: &Tensor, stats: &Tensor, top_k: usize) -> (Tensor, Tensor) {
+    /// Performs batch search from observations.
+    pub fn search_from_obs(
+        &self,
+        spatial: &Tensor,
+        stats: &Tensor,
+        top_k: usize,
+    ) -> (Tensor, Tensor) {
         let _guard = tch::no_grad_guard();
         let encoded = self
             .encoder
             .forward_ts(&[
-                spatial.unsqueeze(0).to_kind(tch::Kind::Float),
-                stats.unsqueeze(0).to_kind(tch::Kind::Float),
+                spatial.to_kind(tch::Kind::Float),
+                stats.to_kind(tch::Kind::Float),
             ])
             .unwrap();
-        let key = self.pca.transform(&encoded).squeeze();
-        let mut key_data = vec![0.0; self.key_dim];
-        key.copy_data(&mut key_data, key.size()[0] as usize);
-        self.search(&key_data, top_k)
+        let keys = self.pca.transform(&encoded);
+        let key_count = keys.size()[0] as usize;
+        let mut n_spatials = Vec::with_capacity(key_count);
+        let mut n_scalars = Vec::with_capacity(key_count);
+        let mut keys_data = vec![0.0; self.key_dim * key_count];
+        keys.copy_data(&mut keys_data, self.key_dim * key_count);
+        for i in 0..key_count {
+            let (n_spatial, n_scalar) = self.search(&keys_data[i * self.key_dim..((i + 1) * self.key_dim)], top_k);
+            n_spatials.push(n_spatial);
+            n_scalars.push(n_scalar);
+        }
+        (Tensor::stack(&n_spatials, 0), Tensor::stack(&n_scalars, 0))
     }
 }
 

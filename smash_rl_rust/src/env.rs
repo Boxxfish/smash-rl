@@ -5,7 +5,7 @@ use buffer_graphics_lib::prelude::*;
 use minifb::{Window, WindowOptions};
 use tch::Tensor;
 
-const IMG_SIZE: u32 = 64;
+pub const IMG_SIZE: u32 = 64;
 const SCALE: usize = 8;
 
 fn insert_obs(obs: Tensor, frame_stack: &mut [Tensor]) {
@@ -38,8 +38,6 @@ pub struct MFEnv {
     pub view_channels: (u32, u32, u32),
     pub time_limit: u32,
     pub current_time: u32,
-    pub top_k: u32,
-    pub retrieval_ctx: Arc<RwLock<RetrievalContext>>,
 }
 
 pub struct MFEnvInfo {
@@ -53,8 +51,6 @@ impl MFEnv {
         rendering: bool,
         view_channels: (u32, u32, u32),
         time_limit: u32,
-        top_k: u32,
-        retrieval_ctx: Arc<RwLock<RetrievalContext>>,
     ) -> Self {
         let options = (tch::Kind::Float, tch::Device::Cpu);
         let game = MicroFighter::new(false);
@@ -67,8 +63,6 @@ impl MFEnv {
                 IMG_SIZE as i64,
             ],
             vec![36],
-            vec![top_k as i64, 16, IMG_SIZE as i64, IMG_SIZE as i64],
-            vec![top_k as i64, 181],
         ];
         let action_space = 9;
         let player_stats = Tensor::zeros([18], options);
@@ -123,8 +117,6 @@ impl MFEnv {
             view_channels,
             time_limit,
             current_time,
-            top_k,
-            retrieval_ctx,
         }
     }
 
@@ -192,12 +184,9 @@ impl MFEnv {
 
         let spatial = Tensor::stack(&self.player_frame_stack, 0);
         let stats = stats_obs;
-        let (neighbor_spatial, neighbor_scalar) = self.retrieval_ctx.read().unwrap().search_from_obs(
-            &spatial, &stats, self.top_k as usize
-        );
 
         (
-            vec![spatial, stats, neighbor_spatial, neighbor_scalar],
+            vec![spatial, stats],
             reward,
             terminated,
             truncated,
@@ -260,12 +249,9 @@ impl MFEnv {
         
         let spatial = Tensor::stack(&self.player_frame_stack, 0);
         let stats = stats_obs;
-        let (neighbor_spatial, neighbor_scalar) = self.retrieval_ctx.read().unwrap().search_from_obs(
-            &spatial, &stats, self.top_k as usize
-        );
 
         (
-            vec![spatial, stats, neighbor_spatial, neighbor_scalar],
+            vec![spatial, stats],
             MFEnvInfo { player_won: false },
         )
     }
@@ -355,11 +341,8 @@ impl MFEnv {
     pub fn bot_obs(&self) -> Vec<Tensor> {
         let spatial = Tensor::stack(&self.bot_frame_stack, 0);
         let stats = Tensor::concatenate(&[self.bot_stats.copy(), self.player_stats.copy()], 0);
-        let (neighbor_spatial, neighbor_scalar) = self.retrieval_ctx.read().unwrap().search_from_obs(
-            &spatial, &stats, self.top_k as usize
-        );
 
-        vec![spatial, stats, neighbor_spatial, neighbor_scalar]
+        vec![spatial, stats]
     }
 
     pub fn bot_step(&mut self, action: u32) {
