@@ -50,6 +50,9 @@ class StepOutput:
 class GameState:
     pass
 
+class BotData:
+    elo: int
+
 class RolloutContext:
     def __init__(
         self,
@@ -61,6 +64,7 @@ class RolloutContext:
         time_limit: int,
         first_bot_path: str,
         top_k: int,
+        initial_elo: float,
     ) -> None: ...
     def rollout(
         self,
@@ -69,6 +73,9 @@ class RolloutContext:
     def push_bot(self, path: str) -> None: ...
     def insert_bot(self, path: str, index: int) -> None: ...
     def set_expl_reward_amount(self, amount: float) -> None: ...
+    def perform_eval(self, eval_steps: int, max_eval_steps: int, elo_k: int) -> None: ...
+    def current_elo(self) -> float: ...
+    def bot_data(self) -> list[BotData]: ...
 
 class MicroFighter:
     def __init__(self, human: bool) -> None: ...

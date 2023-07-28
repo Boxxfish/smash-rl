@@ -9,7 +9,7 @@ pub mod training;
 use micro_fighter::*;
 use ml::GameState;
 use pyo3::prelude::*;
-use training::{test_jit, RolloutContext};
+use training::{test_jit, RolloutContext, BotData};
 
 #[pymodule]
 fn smash_rl_rust(_py: Python, m: &PyModule) -> PyResult<()> {
@@ -17,6 +17,7 @@ fn smash_rl_rust(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<StepOutput>()?;
     m.add_class::<GameState>()?;
     m.add_class::<RolloutContext>()?;
+    m.add_class::<BotData>()?;
     m.add_function(wrap_pyfunction!(test_jit, m)?)?;
     Ok(())
 }

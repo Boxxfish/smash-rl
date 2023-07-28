@@ -238,13 +238,26 @@ impl WorkerContext {
     }
 }
 
+/// Stores metadata on each bot.
+#[pyclass]
+#[derive(Clone)]
+pub struct BotData {
+    #[pyo3(get)]
+    pub elo: f32,
+}
+
 /// Stores data required for the entire rollout process.
 #[pyclass]
 pub struct RolloutContext {
     w_ctxs: Vec<WorkerContext>,
     bot_nets: Vec<tch::CModule>,
+    bot_data: Vec<BotData>,
     retrieval_ctx: Arc<RwLock<RetrievalContext>>,
     top_k: u32,
+    test_env: MFEnv,
+    p_net: tch::CModule,
+    current_elo: f32,
+    initial_elo: f32,
 }
 
 #[pymethods]
@@ -260,6 +273,7 @@ impl RolloutContext {
         time_limit: u32,
         first_bot_path: &str,
         top_k: u32,
+        initial_elo: f32,
     ) -> Self {
         // Set up retrieval context
         let encoder = tch::jit::CModule::load("temp/encoder.ptc").unwrap();
@@ -289,13 +303,21 @@ impl RolloutContext {
             })
             .collect();
 
+        let p_net = tch::CModule::load(first_bot_path).expect("Couldn't load module.");
         let bot_nets = vec![tch::CModule::load(first_bot_path).expect("Couldn't load module.")];
+        let bot_data = vec![BotData { elo: initial_elo }];
+        let test_env = MFEnv::new(max_skip_frames, num_frames, false, (0, 0, 0), time_limit);
 
         Self {
             w_ctxs,
             bot_nets,
             retrieval_ctx,
             top_k,
+            bot_data,
+            test_env,
+            p_net,
+            current_elo: initial_elo,
+            initial_elo,
         }
     }
 
@@ -341,7 +363,12 @@ impl RolloutContext {
                             .collect();
                         let bot_obs = add_retrieval(bot_obs, top_k, &retrieval_ctx);
                         let bot_action_probs = bot_nets.read().unwrap()[w_ctx.bot_ids[env_index]]
-                            .forward_ts(&bot_obs.iter().map(|t| t.to_kind(tch::Kind::Float)).collect::<Vec<_>>())
+                            .forward_ts(
+                                &bot_obs
+                                    .iter()
+                                    .map(|t| t.to_kind(tch::Kind::Float))
+                                    .collect::<Vec<_>>(),
+                            )
                             .unwrap();
                         let bot_action = sample(&bot_action_probs)[0];
                         env_.bot_step(bot_action);
@@ -488,6 +515,98 @@ impl RolloutContext {
                 env.set_dmg_reward_amount(amount);
             }
         }
+    }
+
+    /// Performs evaluation against bots and updates ELO.
+    pub fn perform_eval(&mut self, eval_steps: usize, max_eval_steps: usize, elo_k: u32) {
+        let _guard = tch::no_grad_guard();
+        let (obs_, _) = self.test_env.reset();
+        let mut obs = add_retrieval(
+            obs_.iter()
+                .map(|o| o.to_kind(tch::Kind::Float).unsqueeze(0))
+                .collect::<Vec<_>>(),
+            self.top_k as usize,
+            &self.retrieval_ctx,
+        )
+        .iter()
+        .map(|t| t.to_kind(tch::Kind::Float))
+        .collect::<Vec<_>>();
+        let mut rng = rand::thread_rng();
+        for _ in 0..eval_steps {
+            let eval_bot_index = rng.gen_range(0..self.bot_nets.len());
+            let b_elo = self.bot_data[eval_bot_index].elo;
+            for _ in 0..max_eval_steps {
+                let bot_obs = add_retrieval(
+                    self.test_env
+                        .bot_obs()
+                        .iter()
+                        .map(|o| o.to_kind(tch::Kind::Float).unsqueeze(0))
+                        .collect::<Vec<_>>(),
+                    self.top_k as usize,
+                    &self.retrieval_ctx,
+                )
+                .iter()
+                .map(|t| t.to_kind(tch::Kind::Float))
+                .collect::<Vec<_>>();
+                let bot_action_probs = self.bot_nets[eval_bot_index].forward_ts(&bot_obs).unwrap();
+                let bot_action = sample(&bot_action_probs)[0];
+                self.test_env.bot_step(bot_action);
+
+                let action_probs = self.p_net.forward_ts(&obs).unwrap();
+                let action = sample(&action_probs)[0];
+                let (obs_, _, done, trunc, info) = self.test_env.step(action);
+                obs = add_retrieval(
+                    obs_.iter()
+                        .map(|o| o.to_kind(tch::Kind::Float).unsqueeze(0))
+                        .collect::<Vec<_>>(),
+                    self.top_k as usize,
+                    &self.retrieval_ctx,
+                )
+                .iter()
+                .map(|t| t.to_kind(tch::Kind::Float))
+                .collect::<Vec<_>>();
+                if done || trunc {
+                    let (a, b) = if done {
+                        if info.player_won {
+                            // Current network won
+                            (1.0, 0.0)
+                        } else {
+                            // Opponent won
+                            (0.0, 1.0)
+                        }
+                    } else {
+                        // They tied
+                        (0.5, 0.5)
+                    };
+                    let ea = 1.0 / (1.0 + 10.0_f32.powf((b_elo - self.current_elo) / 400.0));
+                    let eb = 1.0 / (1.0 + 10.0_f32.powf((self.current_elo - b_elo) / 400.0));
+                    self.current_elo += elo_k as f32 * (a - ea);
+                    self.bot_data[eval_bot_index].elo = b_elo + elo_k as f32 * (b - eb);
+                    let (obs_, _) = self.test_env.reset();
+                    obs = add_retrieval(
+                        obs_.iter()
+                            .map(|o| o.to_kind(tch::Kind::Float).unsqueeze(0))
+                            .collect::<Vec<_>>(),
+                        self.top_k as usize,
+                        &self.retrieval_ctx,
+                    )
+                    .iter()
+                    .map(|t| t.to_kind(tch::Kind::Float))
+                    .collect::<Vec<_>>();
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Returns the current ELO.
+    pub fn current_elo(&self) -> f32 {
+        self.current_elo
+    }
+
+    /// Returns a list of bot data.
+    pub fn bot_data(&self) -> Vec<BotData> {
+        self.bot_data.clone()
     }
 }
 
@@ -684,7 +803,10 @@ impl RetrievalContext {
         let mut keys_data = vec![0.0; self.key_dim * key_count];
         keys.copy_data(&mut keys_data, self.key_dim * key_count);
         for i in 0..key_count {
-            let (n_spatial, n_scalar) = self.search(&keys_data[i * self.key_dim..((i + 1) * self.key_dim)], top_k);
+            let (n_spatial, n_scalar) = self.search(
+                &keys_data[i * self.key_dim..((i + 1) * self.key_dim)],
+                top_k,
+            );
             n_spatials.push(n_spatial);
             n_scalars.push(n_scalar);
         }

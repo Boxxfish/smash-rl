@@ -4,21 +4,17 @@ Trains an agent with PPO, augmented with retrieval.
 from argparse import ArgumentParser
 import copy
 import math
-import random
 import time
-from typing import Any, Mapping
+from typing import Any
 import gymnasium as gym
 import numpy as np
 from sklearn.decomposition import PCA  # type: ignore
 import pickle
-from horapy import HNSWIndex  # type: ignore
 
 import torch
 import torch.nn as nn
 import wandb
-from gymnasium.vector import SyncVectorEnv
 from gymnasium.wrappers.time_limit import TimeLimit
-from gymnasium.wrappers.normalize import NormalizeReward
 from torch.distributions import Categorical
 from tqdm import tqdm
 
@@ -27,8 +23,6 @@ from smash_rl.algorithms.rollout_buffer import RolloutBuffer, StateRolloutBuffer
 from smash_rl.conf import entity
 from smash_rl.micro_fighter.env import RetrievalMFEnv, RetrievalContext
 from smash_rl.utils import init_orthogonal
-from smash_rl_rust import test_jit
-import json
 
 from smash_rl_rust import RolloutContext
 
@@ -52,7 +46,7 @@ bot_update = 20  # Number of iterations before caching the current policy.
 max_bots = 10  # Maximum number of bots to store.
 start_elo = 1200  # Starting ELO score for each agent.
 elo_k = 16  # ELO adjustment constant.
-eval_every = 20  # Number of iterations before evaluating.
+eval_every = 2  # Number of iterations before evaluating.
 eval_steps = 5  # Number of eval runs to perform.
 max_eval_steps = 500  # Max number of steps to take during each eval run.
 num_workers = 8
@@ -246,28 +240,11 @@ class PolicyNet(nn.Module):
         x = self.net(x)
         return x
 
-
 encoder = torch.jit.load("temp/encoder.ptc")
 with open("temp/pca.pkl", "rb") as rfile:
     pca = pickle.load(rfile)
 retrieval_ctx = RetrievalContext(
     128, "temp/index.bin", "temp/generated", "temp/episode_data.json", encoder, pca
-)
-env = SyncVectorEnv(
-    [
-        lambda: TimeLimit(
-            NormalizeReward(
-                RetrievalMFEnv(
-                    retrieval_ctx,
-                    top_k,
-                    max_skip_frames=max_skip_frames,
-                    num_frames=num_frames,
-                )
-            ),
-            time_limit,
-        )
-        for _ in range(num_envs)
-    ]
 )
 test_env = TimeLimit(
     RetrievalMFEnv(
@@ -275,6 +252,7 @@ test_env = TimeLimit(
     ),
     max_eval_steps,
 )
+
 if __name__ == "__main__":
     # If evaluating, load the latest policy
     if args.eval:
@@ -404,11 +382,6 @@ if __name__ == "__main__":
     v_opt = torch.optim.Adam(v_net.parameters(), lr=v_lr)
     p_opt = torch.optim.Adam(p_net.parameters(), lr=p_lr)
 
-    # Bot Q networks
-    bot_data = [{"state_dict": p_net.state_dict(), "elo": start_elo}]
-    bot_nets = [copy.deepcopy(p_net)]
-    bot_p_indices = [0 for _ in range(num_envs)]
-    current_elo = start_elo
     bot_net_path = "temp/training/bot_p_net.ptc"
 
     buffer_spatial = RolloutBuffer(
@@ -451,7 +424,9 @@ if __name__ == "__main__":
         time_limit,
         p_net_path,
         top_k,
+        start_elo,
     )
+    del retrieval_ctx, test_env, encoder, pca
 
     for step in tqdm(range(iterations), position=0):
         percent_done = step / iterations
@@ -514,103 +489,14 @@ if __name__ == "__main__":
 
         # Evaluate the network's performance.
         if (step + 1) % eval_every == 0:
-            eval_done = False
-            with torch.no_grad():
-                (obs_1_, obs_2_, n_obs_1_, n_obs_2_), _ = test_env.reset()
-                eval_obs_1 = torch.from_numpy(obs_1_).float()
-                eval_obs_2 = torch.from_numpy(obs_2_).float()
-                eval_n_obs_1 = torch.from_numpy(n_obs_1_).float()
-                eval_n_obs_2 = torch.from_numpy(n_obs_2_).float()
-                for _ in range(eval_steps):
-                    eval_bot_index = random.randrange(0, len(bot_data))
-                    b_elo = bot_data[eval_bot_index]["elo"]
-                    assert isinstance(b_elo, int)
-                    try:
-                        for _ in range(max_eval_steps):
-                            (
-                                bot_obs_1,
-                                bot_obs_2,
-                                bot_n_obs_1,
-                                bot_n_obs_2,
-                            ) = test_env.bot_obs()
-                            bot_action_probs = bot_nets[eval_bot_index](
-                                torch.from_numpy(bot_obs_1).unsqueeze(0).float(),
-                                torch.from_numpy(bot_obs_2).unsqueeze(0).float(),
-                                torch.from_numpy(bot_n_obs_1).unsqueeze(0).float(),
-                                torch.from_numpy(bot_n_obs_2).unsqueeze(0).float(),
-                            ).squeeze()
-                            bot_action = (
-                                Categorical(logits=bot_action_probs).sample().numpy()
-                            )
-                            test_env.bot_step(bot_action)
-
-                            action_probs = p_net(
-                                eval_obs_1.unsqueeze(0),
-                                eval_obs_2.unsqueeze(0),
-                                eval_n_obs_1.unsqueeze(0),
-                                eval_n_obs_2.unsqueeze(0),
-                            ).squeeze()
-                            actions = Categorical(logits=action_probs).sample().numpy()
-                            (
-                                (obs_1_, obs_2_, n_obs_1_, n_obs_2_),
-                                reward,
-                                eval_done,
-                                eval_trunc,
-                                eval_info,
-                            ) = test_env.step(actions)
-
-                            eval_obs_1 = torch.from_numpy(np.array(obs_1_)).float()
-                            eval_obs_2 = torch.from_numpy(np.array(obs_2_)).float()
-                            eval_n_obs_1 = torch.from_numpy(n_obs_1_).float()
-                            eval_n_obs_2 = torch.from_numpy(n_obs_2_).float()
-                            if eval_done or eval_trunc:
-                                if eval_done:
-                                    if eval_info["player_won"]:
-                                        # Current network won
-                                        a = 1.0
-                                        b = 0.0
-                                    else:
-                                        # Opponent won
-                                        b = 1.0
-                                        a = 0.0
-                                elif eval_trunc:
-                                    # They tied
-                                    a = 0.5
-                                    b = 0.5
-                                ea = 1.0 / (
-                                    1.0 + 10.0 ** ((b_elo - current_elo) / 400.0)
-                                )
-                                eb = 1.0 / (
-                                    1.0 + 10.0 ** ((current_elo - b_elo) / 400.0)
-                                )
-                                current_elo = current_elo + elo_k * (a - ea)
-                                bot_data[eval_bot_index]["elo"] = int(
-                                    b_elo + elo_k * (b - eb)
-                                )
-                                (
-                                    obs_1_,
-                                    obs_2_,
-                                    n_obs_1_,
-                                    n_obs_2_,
-                                ), info = test_env.reset()
-                                eval_obs_1 = torch.from_numpy(np.array(obs_1_)).float()
-                                eval_obs_2 = torch.from_numpy(np.array(obs_2_)).float()
-                                eval_n_obs_1 = torch.from_numpy(n_obs_1_).float()
-                                eval_n_obs_2 = torch.from_numpy(n_obs_2_).float()
-                                break
-                    except KeyboardInterrupt:
-                        quit()
-                    except Exception as e:
-                        print(f"Exception during evaluation: {e}.")
-                        pass
-            wandb.log(
-                {
-                    "current_elo": current_elo,
-                },
-            )
+            print("Performing evaluation...", end="")
+            curr_time = time.time()
+            rollout_context.perform_eval(eval_steps, max_eval_steps, elo_k)
+            print(f" took {time.time() - curr_time} seconds.")
 
         wandb.log(
             {
+                "current_elo": rollout_context.current_elo(),
                 "avg_v_loss": total_v_loss / train_iters,
                 "avg_p_loss": total_p_loss / train_iters,
                 "entropy": avg_entropy,
@@ -619,47 +505,30 @@ if __name__ == "__main__":
 
         # Update bot nets
         if (step + 1) % bot_update == 0:
+            traced = torch.jit.trace(
+                p_net,
+                (
+                    torch.from_numpy(sample_input[0]).unsqueeze(0),
+                    torch.from_numpy(sample_input[1]).unsqueeze(0),
+                    torch.from_numpy(sample_input[2]).unsqueeze(0),
+                    torch.from_numpy(sample_input[3]).unsqueeze(0),
+                ),
+            )
+            traced.save(bot_net_path)
+            bot_data = rollout_context.bot_data()
             if len(bot_data) < max_bots:
-                bot_data.append(
-                    {"state_dict": p_net.state_dict(), "elo": int(current_elo)}
-                )
-                bot_nets.append(copy.deepcopy(p_net))
-                traced = torch.jit.trace(
-                    p_net,
-                    (
-                        torch.from_numpy(sample_input[0]).unsqueeze(0),
-                        torch.from_numpy(sample_input[1]).unsqueeze(0),
-                        torch.from_numpy(sample_input[2]).unsqueeze(0),
-                        torch.from_numpy(sample_input[3]).unsqueeze(0),
-                    ),
-                )
-                traced.save(bot_net_path)
                 rollout_context.push_bot(bot_net_path)
             else:
                 # Replace bot with lowest ELO if that ELO is less than the current ELO
                 next_bot_index = 0
+                current_elo = rollout_context.current_elo()
                 lowest_elo = current_elo
                 for bot_index, data in enumerate(bot_data):
-                    assert isinstance(data["elo"], int)
-                    if data["elo"] < lowest_elo:
+                    if data.elo < lowest_elo:
                         next_bot_index = bot_index
                 if current_elo > lowest_elo:
-                    bot_data[next_bot_index] = {
-                        "state_dict": p_net.state_dict(),
-                        "elo": int(current_elo),
-                    }
-                    bot_nets[next_bot_index].load_state_dict(p_net.state_dict())
-                    traced = torch.jit.trace(
-                        p_net,
-                        (
-                            torch.from_numpy(sample_input[0]).unsqueeze(0),
-                            torch.from_numpy(sample_input[1]).unsqueeze(0),
-                            torch.from_numpy(sample_input[2]).unsqueeze(0),
-                            torch.from_numpy(sample_input[3]).unsqueeze(0),
-                        ),
-                    )
-                    traced.save(bot_net_path)
                     rollout_context.insert_bot(bot_net_path, next_bot_index)
+            del bot_data
 
         torch.save(p_net.state_dict(), "temp/p_net_retrieval.pt")
         torch.save(v_net.state_dict(), "temp/v_net_retrieval.pt")
