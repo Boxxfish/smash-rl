@@ -85,7 +85,7 @@ impl RolloutBuffer {
         states: &[Tensor],
         actions: &Tensor,
         action_probs: &Tensor,
-        rewards: &[f32],
+        rewards: &Tensor,
         dones: &[bool],
         truncs: &[bool],
     ) {
@@ -97,7 +97,7 @@ impl RolloutBuffer {
         self.action_probs.get(self.next).copy_(action_probs);
         self.rewards
             .get(self.next)
-            .copy_(&Tensor::from_slice(rewards));
+            .copy_(&rewards);
         self.dones.get(self.next).copy_(&Tensor::from_slice(dones));
         self.truncs
             .get(self.next)
@@ -191,6 +191,7 @@ pub struct WorkerContext {
     env: VecEnv,
     bot_ids: Vec<usize>,
     num_steps: u32,
+    normalize: NormalizeReward,
 }
 
 impl WorkerContext {
@@ -228,12 +229,14 @@ impl WorkerContext {
             num_steps,
         );
         let bot_ids = vec![0; num_envs];
+        let normalize = NormalizeReward::new(env.num_envs as u32);
         Self {
             last_obs,
             rollout_buffer,
             env,
             bot_ids,
             num_steps,
+            normalize,
         }
     }
 }
@@ -388,6 +391,7 @@ impl RolloutContext {
                     total_entropy += entropy.mean(tch::Kind::Float).double_value(&[]);
 
                     let (obs_, rewards, dones, truncs, _) = w_ctx.env.step(&actions);
+                    let rewards = w_ctx.normalize.processes_rews(&Tensor::from_slice(&rewards), &Tensor::from_slice(&dones));
                     obs = add_retrieval(obs_, top_k, &retrieval_ctx);
                     w_ctx.rollout_buffer.insert_step(
                         &obs,
@@ -500,12 +504,18 @@ impl RolloutContext {
     pub fn push_bot(&mut self, path: &str) {
         let bot_net = tch::CModule::load(path).expect("Couldn't load module.");
         self.bot_nets.push(bot_net);
+        self.bot_data.push(BotData {
+            elo: self.initial_elo,
+        });
     }
 
     /// Inserts a new bot at the given position.
     pub fn insert_bot(&mut self, path: &str, index: usize) {
         let bot_net = tch::CModule::load(path).expect("Couldn't load module.");
         self.bot_nets[index] = bot_net;
+        self.bot_data[index] = BotData {
+            elo: self.initial_elo,
+        };
     }
 
     /// Sets the exploration reward amount.
@@ -631,7 +641,7 @@ fn sample(logits: &Tensor) -> Vec<u32> {
     let num_weights = logits.size()[1] as usize;
     let mut generated_samples = Vec::with_capacity(num_samples as usize);
     let mut rng = rand::thread_rng();
-    let probs = logits.softmax(-1, tch::Kind::Float);
+    let probs = logits.softmax(-1, tch::Kind::Float).clamp(0.0001, 0.9999); // Sampling breaks with really high or low values
 
     for i in 0..num_samples {
         let mut weights = vec![0.0; num_weights];
@@ -822,4 +832,90 @@ fn load_npy_as_tensor(path: &str) -> Tensor {
     let shape = np_file.shape().to_vec();
     let data: Vec<f64> = np_file.into_vec().unwrap();
     Tensor::from_slice(&data).reshape(shape.iter().map(|e| *e as i64).collect::<Vec<_>>())
+}
+
+struct RunningMeanStd {
+    pub mean: Tensor,
+    pub var: Tensor,
+    pub count: f32,
+}
+
+impl RunningMeanStd {
+    fn new() -> Self {
+        let mean = Tensor::zeros([], (tch::Kind::Float, tch::Device::Cpu));
+        let var = Tensor::ones([], (tch::Kind::Float, tch::Device::Cpu));
+        let count = 0.0001;
+        Self { mean, var, count }
+    }
+
+    fn update(&mut self, x: &Tensor) {
+        let batch_mean = Tensor::mean(x, tch::Kind::Float);
+        let batch_var = x.var(true);
+        let batch_count = x.size()[0];
+        self.update_from_moments(batch_mean, batch_var, batch_count);
+    }
+
+    fn update_from_moments(&mut self, batch_mean: Tensor, batch_var: Tensor, batch_count: i64) {
+        (self.mean, self.var, self.count) = update_mean_var_count_from_moments(
+            &self.mean,
+            &self.var,
+            self.count,
+            batch_mean,
+            batch_var,
+            batch_count,
+        );
+    }
+}
+
+fn update_mean_var_count_from_moments(
+    mean: &Tensor,
+    var: &Tensor,
+    count: f32,
+    batch_mean: Tensor,
+    batch_var: Tensor,
+    batch_count: i64,
+) -> (Tensor, Tensor, f32) {
+    let delta = &batch_mean.subtract(mean);
+    let tot_count = count + batch_count as f32;
+
+    let new_mean = mean + &delta.multiply_scalar(batch_count as f64 / tot_count as f64);
+    let m_a = count * var;
+    let m_b = batch_var * batch_count;
+    let m2 = m_a + m_b + count * (batch_count as f32) / tot_count * delta.square();
+    let new_var = m2.divide_scalar(tot_count as f64);
+    let new_count = tot_count;
+
+    (new_mean, new_var, new_count)
+}
+
+struct NormalizeReward {
+    return_rms: RunningMeanStd,
+    returns: Tensor,
+    gamma: f32,
+    epsilon: f32,
+}
+impl NormalizeReward {
+    fn new(num_envs: u32) -> Self {
+        let return_rms = RunningMeanStd::new();
+        let returns = Tensor::zeros([num_envs as i64], (tch::Kind::Float, tch::Device::Cpu));
+        let gamma = 0.99;
+        let epsilon = 0.0000001;
+        Self {
+            return_rms,
+            returns,
+            gamma,
+            epsilon,
+        }
+    }
+
+    fn processes_rews(&mut self, rews: &Tensor, dones: &Tensor) -> Tensor {
+        self.returns = (self.gamma * (1 - dones)) * &self.returns + rews;
+        let rews = self.normalize(rews);
+        rews
+    }
+
+    fn normalize(&mut self, rews: &Tensor) -> Tensor {
+        self.return_rms.update(&self.returns);
+        rews / Tensor::sqrt(&(self.epsilon + &self.return_rms.var))
+    }
 }

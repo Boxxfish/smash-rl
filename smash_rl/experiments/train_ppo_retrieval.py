@@ -29,8 +29,8 @@ from smash_rl_rust import RolloutContext
 _: Any
 
 # Hyperparameters
-num_envs = 32  # Number of environments to step through at once during sampling.
-train_steps = 128  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
+num_envs = 64  # Number of environments to step through at once during sampling.
+train_steps = 64  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
 iterations = 1000  # Number of sample/train iterations.
 train_iters = 2  # Number of passes over the samples collected.
 train_batch_size = 128  # Minibatch size while training models.
@@ -46,7 +46,7 @@ bot_update = 20  # Number of iterations before caching the current policy.
 max_bots = 10  # Maximum number of bots to store.
 start_elo = 1200  # Starting ELO score for each agent.
 elo_k = 16  # ELO adjustment constant.
-eval_every = 2  # Number of iterations before evaluating.
+eval_every = 4  # Number of iterations before evaluating.
 eval_steps = 5  # Number of eval runs to perform.
 max_eval_steps = 500  # Max number of steps to take during each eval run.
 num_workers = 8
@@ -276,7 +276,7 @@ if __name__ == "__main__":
             torch.Size(neighbor_spatial_obs_space.shape),
             neighbor_scalar_obs_space.shape[1],
         )
-        # p_net.load_state_dict(torch.load("temp/p_net_retrieval.pt"))
+        p_net.load_state_dict(torch.load("temp/p_net_retrieval.pt"))
         test_env = TimeLimit(
             RetrievalMFEnv(
                 retrieval_ctx,
@@ -445,15 +445,21 @@ if __name__ == "__main__":
             ),
         )
         traced.save(p_net_path)
-        (
-            (obs_1_buf, obs_2_buf, obs_3_buf, obs_4_buf),
-            act_buf,
-            act_probs_buf,
-            reward_buf,
-            done_buf,
-            trunc_buf,
-            avg_entropy,
-        ) = rollout_context.rollout(p_net_path)
+        try:
+            (
+                (obs_1_buf, obs_2_buf, obs_3_buf, obs_4_buf),
+                act_buf,
+                act_probs_buf,
+                reward_buf,
+                done_buf,
+                trunc_buf,
+                avg_entropy,
+            ) = rollout_context.rollout(p_net_path)
+        except KeyboardInterrupt:
+            quit()
+        except Exception as e:
+            print(e)
+            continue
         buffer_spatial.states.copy_(obs_1_buf)
         buffer_stats.states.copy_(obs_2_buf)
         buffer_n_spatial.states.copy_(obs_3_buf)
@@ -480,7 +486,7 @@ if __name__ == "__main__":
             discount,
             lambda_,
             epsilon,
-            entropy_coeff=0.0001,
+            entropy_coeff=0.0003,
         )
         buffer_spatial.clear()
         buffer_stats.clear()
