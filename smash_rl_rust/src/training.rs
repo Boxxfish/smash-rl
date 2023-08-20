@@ -95,9 +95,7 @@ impl RolloutBuffer {
         }
         self.actions.get(self.next).copy_(actions);
         self.action_probs.get(self.next).copy_(action_probs);
-        self.rewards
-            .get(self.next)
-            .copy_(&rewards);
+        self.rewards.get(self.next).copy_(&rewards);
         self.dones.get(self.next).copy_(&Tensor::from_slice(dones));
         self.truncs
             .get(self.next)
@@ -391,8 +389,9 @@ impl RolloutContext {
                     total_entropy += entropy.mean(tch::Kind::Float).double_value(&[]);
 
                     let (obs_, rewards, dones, truncs, _) = w_ctx.env.step(&actions);
-                    let rewards = w_ctx.normalize.processes_rews(&Tensor::from_slice(&rewards), &Tensor::from_slice(&dones));
-                    obs = add_retrieval(obs_, top_k, &retrieval_ctx);
+                    let rewards = w_ctx
+                        .normalize
+                        .processes_rews(&Tensor::from_slice(&rewards), &Tensor::from_slice(&dones));
                     w_ctx.rollout_buffer.insert_step(
                         &obs,
                         &Tensor::from_slice(&actions.iter().map(|a| *a as i64).collect::<Vec<_>>())
@@ -402,6 +401,7 @@ impl RolloutContext {
                         &dones,
                         &truncs,
                     );
+                    obs = add_retrieval(obs_, top_k, &retrieval_ctx);
 
                     // Change opponent when environment ends
                     for env_index in 0..w_ctx.env.num_envs {
@@ -636,12 +636,12 @@ fn add_retrieval(
 }
 
 /// Returns a list of actions given the probabilities.
-fn sample(logits: &Tensor) -> Vec<u32> {
-    let num_samples = logits.size()[0];
-    let num_weights = logits.size()[1] as usize;
+fn sample(log_probs: &Tensor) -> Vec<u32> {
+    let num_samples = log_probs.size()[0];
+    let num_weights = log_probs.size()[1] as usize;
     let mut generated_samples = Vec::with_capacity(num_samples as usize);
     let mut rng = rand::thread_rng();
-    let probs = logits.softmax(-1, tch::Kind::Float).clamp(0.0001, 0.9999); // Sampling breaks with really high or low values
+    let probs = log_probs.exp().clamp(0.0001, 0.9999); // Sampling breaks with really high or low values
 
     for i in 0..num_samples {
         let mut weights = vec![0.0; num_weights];
@@ -909,9 +909,8 @@ impl NormalizeReward {
     }
 
     fn processes_rews(&mut self, rews: &Tensor, dones: &Tensor) -> Tensor {
-        self.returns = (self.gamma * (1 - dones)) * &self.returns + rews;
-        let rews = self.normalize(rews);
-        rews
+        self.returns = (self.gamma * (1 - dones.to_kind(tch::Kind::Float))) * &self.returns + rews;
+        self.normalize(rews)
     }
 
     fn normalize(&mut self, rews: &Tensor) -> Tensor {
