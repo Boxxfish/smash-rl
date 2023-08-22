@@ -86,3 +86,14 @@ class MicroFighter:
     def get_game_state(self) -> GameState: ...
     def reset(self) -> StepOutput: ...
     def get_screen_size(self) -> int: ...
+
+class Button:
+    A: int
+    B: int
+    X: int
+    Z: int
+    L: int
+    
+class Stick:
+    Main: int
+    Control: int

@@ -3783,6 +3783,7 @@ dependencies = [
  "bevy_save",
  "buffer-graphics-lib",
  "hora",
+ "libc",
  "minifb",
  "ndarray",
  "npyz",
