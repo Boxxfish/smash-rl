@@ -21,10 +21,6 @@ path = "src/binaries/run_env.rs"
 name = "test_retrieval"
 path = "src/binaries/test_retrieval.rs"
 
-[[bin]]
-name = "test_melee"
-path = "src/binaries/test_melee.rs"
-
 [profile.dev]
 opt-level=1
 
@@ -49,3 +45,4 @@ hora = "0.1.0"
 npyz = "0.8.1"
 ndarray = "0.15.0"
 libc = "0.2.0"
+image = "0.24.7"

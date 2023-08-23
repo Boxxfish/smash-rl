@@ -1,9 +1,12 @@
+use image::DynamicImage;
+use libc;
 use pyo3::prelude::*;
 use std::{
+    collections::HashMap,
     fs::File,
-    io::{BufWriter, Write}, os::unix::prelude::OpenOptionsExt,
+    io::{BufWriter, Write},
+    os::unix::prelude::OpenOptionsExt,
 };
-use libc;
 
 #[pyclass]
 pub struct Gamepad {
@@ -40,6 +43,21 @@ impl Gamepad {
             .push_str(&format!("SET {} {} {}\n", stick.as_string(), x, y));
     }
 
+    /// Takes a screenshot.
+    pub fn take_screenshot(&mut self) {
+        self.cmd_buffer.push_str("PRESS D_UP\nRELEASE D_UP\n");
+    }
+
+    /// Reloads the game state.
+    pub fn reload_state(&mut self) {
+        self.cmd_buffer.push_str("PRESS D_DOWN\nRELEASE D_DOWN\n");
+    }
+
+    /// Toggles pause.
+    pub fn toggle_pause(&mut self) {
+        self.cmd_buffer.push_str("PRESS D_LEFT\nRELEASE D_LEFT\n");
+    }
+
     /// Flushes the command buffer.
     pub fn flush(&mut self) {
         self.writer.write_all(self.cmd_buffer.as_bytes()).unwrap();
@@ -48,7 +66,7 @@ impl Gamepad {
 }
 
 #[pyclass]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Hash, Eq, PartialEq)]
 pub enum Button {
     A,
     B,
@@ -71,18 +89,55 @@ impl Button {
 }
 
 #[pyclass]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Hash, Eq, PartialEq)]
 pub enum Stick {
     Main,
-    Control,
+    C,
 }
 
 impl Stick {
     pub fn as_string(&self) -> String {
         match self {
             Stick::Main => "MAIN",
-            Stick::Control => "CONTROL",
+            Stick::C => "C",
         }
         .to_string()
+    }
+}
+
+/// Interface to a single Dolphin instance.
+pub struct Console {
+    gamepad: Gamepad,
+    screenshot_path: String,
+}
+
+impl Console {
+    pub fn new(dolphin_path: &str) -> Self {
+        let pipe_path = format!("{dolphin_path}/Pipes/pipe1");
+        let screenshot_path = format!("{dolphin_path}/ScreenShots/GALE01");
+        Self {
+            gamepad: Gamepad::new(&pipe_path),
+            screenshot_path,
+        }
+    }
+
+    /// Returns the latest screenshot.
+    pub fn get_screen(&self) -> DynamicImage {
+        image::io::Reader::open(format!("{}/screenshot-1.png", self.screenshot_path))
+            .unwrap()
+            .decode()
+            .unwrap()
+    }
+
+    /// Sets the current input.
+    pub fn set_input(&mut self, btn_map: HashMap<Button, bool>, stick_map: HashMap<Stick, (f32, f32)>) {
+        for btn in btn_map.keys() {
+            self.gamepad.set_btn_state(*btn, *btn_map.get(btn).unwrap());
+        }
+
+        for stick in stick_map.keys() {
+            let val = *stick_map.get(stick).unwrap();
+            self.gamepad.set_stick_value(*stick, val.0, val.1);
+        }
     }
 }
