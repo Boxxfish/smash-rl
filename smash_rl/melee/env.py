@@ -7,8 +7,14 @@ import melee  # type: ignore
 from melee import Button, Action
 import random
 from gymnasium.wrappers.time_limit import TimeLimit
+import pygame
 
-IMG_SIZE = 64
+IMG_SIZE = 32
+IMG_SCALE = 8
+X_MIN = -200
+X_MAX = 200
+Y_MIN = -200
+Y_MAX = 200
 
 ACTION_MAP = {
     # Idle
@@ -142,7 +148,13 @@ class MeleeEnv(Env):
     The action space is [buttons (5), main stick (7), control stick (5)].
     """
 
-    def __init__(self, dolphin_home_path: str):
+    def __init__(
+        self,
+        dolphin_home_path: str,
+        view_channels: tuple[int, int, int] = (0, 1, 2),
+        render_mode: Optional[str] = None,
+        num_frames: int = 4,
+    ):
         self.console = melee.Console(
             dolphin_home_path=dolphin_home_path, tmp_home_directory=False
         )
@@ -184,6 +196,23 @@ class MeleeEnv(Env):
         self.framedata = melee.framedata.FrameData()
         self.last_stocks1 = 0
         self.last_stocks2 = 0
+        self.num_channels = 4
+
+        # Spatial stuff
+        self.num_frames = num_frames
+        self.player_frame_stack = [
+            np.zeros([self.num_channels, IMG_SIZE, IMG_SIZE])
+            for _ in range(self.num_frames)
+        ]
+
+        self.render_mode = render_mode
+        self.view_channels = view_channels
+        if self.render_mode == "human":
+            pygame.init()
+            self.screen = pygame.display.set_mode(
+                (IMG_SIZE * IMG_SCALE, IMG_SIZE * IMG_SCALE)
+            )
+            self.clock = pygame.time.Clock()
 
     def step(
         self, action: tuple[int, int, int]
@@ -224,7 +253,7 @@ class MeleeEnv(Env):
                 reward = -1.0
             else:
                 reward = 1.0
-        
+
         if diff_stocks2 == -1:
             if self.player_pad == 1:
                 reward = -1.0
@@ -234,11 +263,19 @@ class MeleeEnv(Env):
         if stocks1 == 0 or stocks2 == 0:
             done = True
 
-        print(reward)
-
         # Generate stats
-        self.player_stats = compute_stats_single(gamestate, self.player_pad, self.framedata)
-        self.bot_stats = compute_stats_single(gamestate, 1 - self.player_pad, self.framedata)
+        self.player_stats = compute_stats_single(
+            gamestate, self.player_pad, self.framedata
+        )
+        self.bot_stats = compute_stats_single(
+            gamestate, 1 - self.player_pad, self.framedata
+        )
+
+        # Generate spatial
+        channels = self.gen_channels(gamestate, player_id=self.player_pad)
+        self.player_frame_stack = self.insert_obs(
+            np.stack(channels), self.player_frame_stack
+        )
 
         return (np.array([]), np.array([])), reward, done, False, {}
 
@@ -264,12 +301,90 @@ class MeleeEnv(Env):
 
         # Generate stats
         gamestate = self.console.step()
-        self.player_stats = compute_stats_single(gamestate, self.player_pad, self.framedata)
-        self.bot_stats = compute_stats_single(gamestate, 1 - self.player_pad, self.framedata)
+        self.player_stats = compute_stats_single(
+            gamestate, self.player_pad, self.framedata
+        )
+        self.bot_stats = compute_stats_single(
+            gamestate, 1 - self.player_pad, self.framedata
+        )
         self.last_stocks1 = int(gamestate.players[1].stock)
         self.last_stocks2 = int(gamestate.players[2].stock)
 
+        # Generate spatial
+        self.player_frame_stack = [
+            np.zeros([self.num_channels, IMG_SIZE, IMG_SIZE])
+            for _ in range(self.num_frames)
+        ]
+
         return (np.array([]), np.array([])), {}
+
+    def render(self):
+        if self.render_mode == "human":
+            channels = self.player_frame_stack[0]
+            r = channels[self.view_channels[0]]
+            g = r  # channels[self.view_channels[1]]
+            b = r  # channels[self.view_channels[2]]
+            view = np.flip(np.stack([r, g, b]).transpose(2, 1, 0), 1).clip(0, 1) * 255.0
+            view_surf = pygame.Surface([IMG_SIZE, IMG_SIZE])
+            pygame.surfarray.blit_array(view_surf, view)
+            pygame.transform.scale(
+                view_surf, [IMG_SIZE * IMG_SCALE, IMG_SIZE * IMG_SCALE], self.screen
+            )
+            pygame.display.flip()
+            self.clock.tick(60)
+
+    def gen_channels(
+        self, gamestate: melee.GameState, player_id: int
+    ) -> list[np.ndarray]:
+        """
+        Converts `gamestate` into observation channels for a player.
+        """
+        player: melee.PlayerState = gamestate.players[player_id + 1]
+        stage = gamestate.stage
+
+        stage_channel = np.zeros([IMG_SIZE, IMG_SIZE])
+
+        stage_l = melee.stages.EDGE_POSITION[stage]
+        stage_r = melee.stages.EDGE_POSITION[stage]
+        stage_l = view_space((stage_l, 0.0))
+        stage_r = view_space((stage_r, 0.0))
+        stage_channel[stage_l[1]][stage_l[0]] = 1
+        stage_channel[stage_r[1]][stage_r[0]] = 1
+
+        top_height, top_l, top_r = melee.stages.top_platform_position(stage)
+        if top_height:
+            top_l = view_space((top_l, 0.0))
+            top_r = view_space((top_r, 0.0))
+            stage_channel[top_l[1]][top_l[0]] = 1
+            stage_channel[top_r[1]][top_r[0]] = 1
+        
+        left_height, left_l, left_r = melee.stages.left_platform_position(stage)
+        if left_height:
+            left_l = view_space((left_l, 0.0))
+            left_r = view_space((left_r, 0.0))
+            stage_channel[left_l[1]][left_l[0]] = 1
+            stage_channel[left_r[1]][left_r[0]] = 1
+        
+        right_height, right_l, right_r = melee.stages.right_platform_position(stage)
+        if right_height:
+            right_l = view_space((right_l, 0.0))
+            right_r = view_space((right_r, 0.0))
+            stage_channel[right_l[1]][right_l[0]] = 1
+            stage_channel[right_r[1]][right_r[0]] = 1
+
+        return [stage_channel]
+
+    def insert_obs(
+        self, obs: np.ndarray, frame_stack: list[np.ndarray]
+    ) -> list[np.ndarray]:
+        """
+        Inserts a new frame and cycles the observation.
+        Sets frame "n" to the current value of frame "n - 1", from 1 to `self.num_frames`.
+        """
+        for i in reversed(range(1, self.num_frames)):
+            frame_stack[i] = frame_stack[i - 1]
+        frame_stack[0] = obs
+        return frame_stack
 
 
 def compute_stats_single(
@@ -281,18 +396,36 @@ def compute_stats_single(
     stats[1] = int(player.facing)
     stats[2] = player.jumps_left
     if player.action in ACTION_MAP:
-        stats[3 + ACTION_MAP[player.action]] = player.action_frame / framedata.frame_count(
-            player.character, player.action
-        )
+        stats[
+            3 + ACTION_MAP[player.action]
+        ] = player.action_frame / framedata.frame_count(player.character, player.action)
     return stats
 
 
+def view_space(point: tuple[float, float]) -> tuple[float, float]:
+    """
+    Converts a world point into a stage point.
+    """
+    x, y = point
+    x_range = X_MAX - X_MIN
+    y_range = Y_MAX - Y_MIN
+    x = int((x - X_MIN) / x_range)
+    y = int((y - Y_MIN) / y_range)
+    return (x, y)
+
+
+import os
+
 if __name__ == "__main__":
-    env = TimeLimit(MeleeEnv("/home/ben/.config/SlippiOnline/"), 1000)
+    env = TimeLimit(
+        MeleeEnv(os.environ["HOME"] + "/.config/SlippiOnline/", render_mode="human"),
+        1000,
+    )
     act_space = env.action_space
     obs, _ = env.reset()
     while True:
         action = act_space.sample()
         obs, _, done, trunc, _ = env.step(action)
+        env.render()
         if done or trunc:
             obs, _ = env.reset()

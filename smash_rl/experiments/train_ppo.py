@@ -53,7 +53,7 @@ eval_every = 4  # Number of iterations before evaluating.
 eval_steps = 5  # Number of eval runs to perform.
 max_eval_steps = 500  # Max number of steps to take during each eval run.
 num_workers = 8
-entropy_coeff = 0.001
+entropy_coeff = 0.003
 device = torch.device("cuda")  # Device to use during training.
 
 # Argument parsing
@@ -274,13 +274,13 @@ if __name__ == "__main__":
                         torch.from_numpy(bot_obs_1).unsqueeze(0).float(),
                         torch.from_numpy(bot_obs_2).unsqueeze(0).float(),
                     ).squeeze()
-                    bot_action = Categorical(logits=bot_action_probs).sample().numpy()
+                    bot_action = Categorical(probs=bot_action_probs.exp()).sample().numpy()
                     test_env.bot_step(bot_action)
 
                     action_probs = p_net(
                         eval_obs_1.unsqueeze(0), eval_obs_2.unsqueeze(0)
                     ).squeeze()
-                    action = Categorical(logits=action_probs).sample().numpy()
+                    action = Categorical(probs=action_probs.exp()).sample().numpy()
                     (
                         (obs_1_, obs_2_),
                         reward,
@@ -465,13 +465,13 @@ if __name__ == "__main__":
                         torch.from_numpy(bot_obs_1).unsqueeze(0).float(),
                         torch.from_numpy(bot_obs_2).unsqueeze(0).float(),
                     ).squeeze()
-                    bot_action = Categorical(logits=bot_action_probs).sample().numpy()
+                    bot_action = Categorical(probs=bot_action_probs.exp()).sample().numpy()
                     test_env.bot_step(bot_action)
 
                     action_probs = p_net(
                         eval_obs_1.unsqueeze(0), eval_obs_2.unsqueeze(0)
                     ).squeeze()
-                    action = Categorical(logits=action_probs).sample().numpy()
+                    action = Categorical(probs=action_probs.exp()).sample().numpy()
                     (
                         (obs_1_, obs_2_),
                         reward,
@@ -540,13 +540,13 @@ if __name__ == "__main__":
                     torch.from_numpy(bot_obs_1).unsqueeze(0).float(),
                     torch.from_numpy(bot_obs_2).unsqueeze(0).float(),
                 ).squeeze()
-                bot_action = Categorical(logits=bot_action_probs).sample().numpy()
+                bot_action = Categorical(probs=bot_action_probs.exp()).sample().numpy()
                 test_env.bot_step(bot_action)
 
                 action_probs = p_net(
                     eval_obs_1.unsqueeze(0), eval_obs_2.unsqueeze(0)
                 ).squeeze()
-                action = Categorical(logits=action_probs).sample().numpy()
+                action = Categorical(probs=action_probs.exp()).sample().numpy()
                 (
                     (obs_1_, obs_2_),
                     reward,
@@ -660,6 +660,9 @@ if __name__ == "__main__":
             trunc_buf,
             avg_entropy,
         ) = rollout_context.rollout(p_net_path)
+
+        avg_train_reward = reward_buf.mean().item()
+
         buffer_spatial.states.copy_(obs_1_buf)
         buffer_stats.states.copy_(obs_2_buf)
         buffer_spatial.actions.copy_(act_buf)
@@ -702,6 +705,7 @@ if __name__ == "__main__":
                 "avg_p_loss": total_p_loss / train_iters,
                 "kl_div": kl_div,
                 "entropy": avg_entropy,
+                "avg_train_reward": avg_train_reward,
             }
         )
 

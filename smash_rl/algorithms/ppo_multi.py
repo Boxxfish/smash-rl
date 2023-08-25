@@ -70,10 +70,10 @@ def train_ppo(
 
             # Train policy network
             with torch.no_grad():
-                old_act_distr = Categorical(logits=action_probs)
+                old_act_distr = Categorical(probs=action_probs.exp())
                 old_act_probs = old_act_distr.log_prob(actions.squeeze())
             new_log_probs = p_net(*prev_states)
-            new_act_distr = Categorical(logits=new_log_probs)
+            new_act_distr = Categorical(probs=new_log_probs.exp())
             new_act_probs = new_act_distr.log_prob(actions.squeeze())
 
             new_kl = (

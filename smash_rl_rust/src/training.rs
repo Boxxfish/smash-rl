@@ -381,10 +381,9 @@ impl RolloutContext {
                     let actions = sample(&action_probs);
 
                     // Compute entropy.
-                    // Based on the official Torch Distributions source.
-                    let logits = &action_probs;
-                    let probs = action_probs.softmax(-1, tch::Kind::Float);
-                    let p_log_p = logits * probs;
+                    let log_probs = &action_probs;
+                    let probs = log_probs.exp();
+                    let p_log_p = log_probs * probs;
                     let entropy = -p_log_p.sum_dim_intlist(-1, false, tch::Kind::Float);
                     total_entropy += entropy.mean(tch::Kind::Float).double_value(&[]);
 
