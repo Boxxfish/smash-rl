@@ -22,6 +22,7 @@ pygame = "^2.4.0"
 scikit-learn = "^1.3.0"
 horapy = "^0.0.1"
 ipython = "^8.14.0"
+melee = "^0.37.0"
 
 
 [tool.poetry.group.dev.dependencies]
