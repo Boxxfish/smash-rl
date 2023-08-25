@@ -24,8 +24,9 @@ def train_ppo(
     epsilon: float,
     gradient_steps: int = 1,
     use_masks: bool = False,
-    entropy_coeff: float = 0.001
-) -> Tuple[float, float]:
+    entropy_coeff: float = 0.001,
+    kl_limit: float = 0.5,
+) -> Tuple[float, float, float]:
     """
     Performs the PPO training loop. Returns a tuple of total policy loss and
     total value loss.
@@ -48,8 +49,13 @@ def train_ppo(
     p_opt.zero_grad()
     v_opt.zero_grad()
 
+    avg_kl_div = 0.0
+    iterations_done = 0
+
     for _ in tqdm(range(train_iters), position=1):
-        batches = buffer_1.samples_merged(aux_buffers, train_batch_size, discount, lambda_, v_net_frozen)
+        batches = buffer_1.samples_merged(
+            aux_buffers, train_batch_size, discount, lambda_, v_net_frozen
+        )
         for (
             i,
             (prev_states, actions, action_probs, returns, advantages, action_masks),
@@ -64,18 +70,35 @@ def train_ppo(
 
             # Train policy network
             with torch.no_grad():
-                old_act_probs = Categorical(logits=action_probs).log_prob(
-                    actions.squeeze()
-                )
+                old_act_distr = Categorical(logits=action_probs)
+                old_act_probs = old_act_distr.log_prob(actions.squeeze())
             new_log_probs = p_net(*prev_states)
             new_act_distr = Categorical(logits=new_log_probs)
-            new_act_probs = new_act_distr.log_prob(
-                actions.squeeze()
+            new_act_probs = new_act_distr.log_prob(actions.squeeze())
+
+            new_kl = (
+                torch.distributions.kl_divergence(old_act_distr, new_act_distr)
+                .mean()
+                .item()
             )
+
+            # Stop taking steps if KL divergence passes threshold
+            if new_kl > kl_limit and iterations_done > 0:
+                if device.type != "cpu":
+                    p_net.cpu()
+                    v_net.cpu()
+                p_net.eval()
+                v_net.eval()
+                return (total_p_loss, total_v_loss, avg_kl_div / iterations_done)
+
+            avg_kl_div += new_kl
+
             entropy = new_act_distr.entropy().mean()
             term1 = (new_act_probs - old_act_probs).exp() * advantages.squeeze()
             term2 = (1.0 + epsilon * advantages.squeeze().sign()) * advantages.squeeze()
-            p_loss = (-(term1.min(term2).mean() + entropy * entropy_coeff)) / gradient_steps
+            p_loss = (
+                -(term1.min(term2).mean() + entropy * entropy_coeff)
+            ) / gradient_steps
             p_loss.backward()
             total_p_loss += p_loss.item()
 
@@ -91,10 +114,12 @@ def train_ppo(
                 p_opt.zero_grad()
                 v_opt.zero_grad()
 
+            iterations_done += 1
+
     if device.type != "cpu":
         p_net.cpu()
         v_net.cpu()
     p_net.eval()
     v_net.eval()
 
-    return (total_p_loss, total_v_loss)
+    return (total_p_loss, total_v_loss, avg_kl_div / iterations_done)

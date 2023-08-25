@@ -240,6 +240,7 @@ class PolicyNet(nn.Module):
         x = self.net(x)
         return x
 
+
 encoder = torch.jit.load("temp/encoder.ptc")
 with open("temp/pca.pkl", "rb") as rfile:
     pca = pickle.load(rfile)
@@ -469,11 +470,21 @@ if __name__ == "__main__":
         buffer_spatial.rewards.copy_(reward_buf)
         buffer_spatial.dones.copy_(done_buf)
         buffer_spatial.truncs.copy_(trunc_buf)
-        del obs_1_buf, obs_2_buf, obs_3_buf, obs_4_buf, act_buf, act_probs_buf, reward_buf, done_buf, trunc_buf
+        del (
+            obs_1_buf,
+            obs_2_buf,
+            obs_3_buf,
+            obs_4_buf,
+            act_buf,
+            act_probs_buf,
+            reward_buf,
+            done_buf,
+            trunc_buf,
+        )
         print(f" took {time.time() - curr_time} seconds.")
 
         # Train
-        total_p_loss, total_v_loss = train_ppo(
+        total_p_loss, total_v_loss, kl_div = train_ppo(
             p_net,
             v_net,
             p_opt,
@@ -505,6 +516,7 @@ if __name__ == "__main__":
                 "current_elo": rollout_context.current_elo(),
                 "avg_v_loss": total_v_loss / train_iters,
                 "avg_p_loss": total_p_loss / train_iters,
+                "kl_div": kl_div,
                 "entropy": avg_entropy,
             }
         )

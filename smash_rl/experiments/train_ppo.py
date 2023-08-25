@@ -53,6 +53,7 @@ eval_every = 4  # Number of iterations before evaluating.
 eval_steps = 5  # Number of eval runs to perform.
 max_eval_steps = 500  # Max number of steps to take during each eval run.
 num_workers = 8
+entropy_coeff = 0.001
 device = torch.device("cuda")  # Device to use during training.
 
 # Argument parsing
@@ -412,7 +413,7 @@ if __name__ == "__main__":
             assert isinstance(pca, PCA)
         pca_data = {
             "basis": [component.tolist() for component in pca.components_],
-            "mean": pca.mean_.tolist()
+            "mean": pca.mean_.tolist(),
         }
         with open("temp/pca.json", "w") as wfile:
             json.dump(pca_data, wfile)
@@ -651,8 +652,7 @@ if __name__ == "__main__":
         )
         traced.save(p_net_path)
         (
-            (obs_1_buf,
-            obs_2_buf, _, _),
+            (obs_1_buf, obs_2_buf, _, _),
             act_buf,
             act_probs_buf,
             reward_buf,
@@ -670,7 +670,7 @@ if __name__ == "__main__":
         print(f" took {time.time() - curr_time} seconds.")
 
         # Train
-        total_p_loss, total_v_loss = train_ppo(
+        total_p_loss, total_v_loss, kl_div = train_ppo(
             p_net,
             v_net,
             p_opt,
@@ -683,7 +683,7 @@ if __name__ == "__main__":
             discount,
             lambda_,
             epsilon,
-            entropy_coeff=0.0003,
+            entropy_coeff=entropy_coeff,
         )
         buffer_spatial.clear()
         buffer_stats.clear()
@@ -700,6 +700,7 @@ if __name__ == "__main__":
                 "current_elo": rollout_context.current_elo(),
                 "avg_v_loss": total_v_loss / train_iters,
                 "avg_p_loss": total_p_loss / train_iters,
+                "kl_div": kl_div,
                 "entropy": avg_entropy,
             }
         )
