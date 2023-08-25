@@ -5,7 +5,7 @@ use buffer_graphics_lib::prelude::*;
 use minifb::{Window, WindowOptions};
 use tch::Tensor;
 
-pub const IMG_SIZE: u32 = 64;
+pub const IMG_SIZE: u32 = 32;
 const SCALE: usize = 8;
 
 fn insert_obs(obs: Tensor, frame_stack: &mut [Tensor]) {

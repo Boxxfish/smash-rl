@@ -18,7 +18,7 @@ from sklearn.decomposition import PCA  # type: ignore
 from torch import nn
 import torch
 
-IMG_SIZE = 64
+IMG_SIZE = 32
 IMG_SCALE = 8
 
 
