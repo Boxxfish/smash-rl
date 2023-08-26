@@ -9,12 +9,12 @@ import random
 from gymnasium.wrappers.time_limit import TimeLimit
 import pygame
 
-IMG_SIZE = 32
-IMG_SCALE = 8
-X_MIN = -200
-X_MAX = 200
-Y_MIN = -200
-Y_MAX = 200
+IMG_SIZE = 128
+IMG_SCALE = 4
+X_MIN = -246
+X_MAX = 246
+Y_MIN = -140
+Y_MAX = 188
 
 ACTION_MAP = {
     # Idle
@@ -197,6 +197,7 @@ class MeleeEnv(Env):
         self.last_stocks1 = 0
         self.last_stocks2 = 0
         self.num_channels = 4
+        self.framedata = melee.FrameData()
 
         # Spatial stuff
         self.num_frames = num_frames
@@ -322,7 +323,7 @@ class MeleeEnv(Env):
         if self.render_mode == "human":
             channels = self.player_frame_stack[0]
             r = channels[self.view_channels[0]]
-            g = r  # channels[self.view_channels[1]]
+            g = channels[self.view_channels[1]]
             b = r  # channels[self.view_channels[2]]
             view = np.flip(np.stack([r, g, b]).transpose(2, 1, 0), 1).clip(0, 1) * 255.0
             view_surf = pygame.Surface([IMG_SIZE, IMG_SIZE])
@@ -331,7 +332,7 @@ class MeleeEnv(Env):
                 view_surf, [IMG_SIZE * IMG_SCALE, IMG_SIZE * IMG_SCALE], self.screen
             )
             pygame.display.flip()
-            self.clock.tick(60)
+            # self.clock.tick(60)
 
     def gen_channels(
         self, gamestate: melee.GameState, player_id: int
@@ -339,40 +340,59 @@ class MeleeEnv(Env):
         """
         Converts `gamestate` into observation channels for a player.
         """
-        player: melee.PlayerState = gamestate.players[player_id + 1]
-        stage = gamestate.stage
+        # player: melee.PlayerState = gamestate.players[player_id + 1]
 
+        # Create stage channel
+        stage = gamestate.stage
         stage_channel = np.zeros([IMG_SIZE, IMG_SIZE])
 
-        stage_l = melee.stages.EDGE_POSITION[stage]
         stage_r = melee.stages.EDGE_POSITION[stage]
-        stage_l = view_space((stage_l, 0.0))
-        stage_r = view_space((stage_r, 0.0))
-        stage_channel[stage_l[1]][stage_l[0]] = 1
-        stage_channel[stage_r[1]][stage_r[0]] = 1
+        stage_l = -stage_r
+        stage_y = 0.0
+        stage_l = view_space((stage_l, stage_y), IMG_SIZE)
+        stage_r = view_space((stage_r, stage_y), IMG_SIZE)
+        for x in range(stage_l[0], stage_r[0]):
+            stage_channel[stage_l[1]][x] = 1
 
-        top_height, top_l, top_r = melee.stages.top_platform_position(stage)
-        if top_height:
-            top_l = view_space((top_l, 0.0))
-            top_r = view_space((top_r, 0.0))
-            stage_channel[top_l[1]][top_l[0]] = 1
-            stage_channel[top_r[1]][top_r[0]] = 1
-        
-        left_height, left_l, left_r = melee.stages.left_platform_position(stage)
-        if left_height:
-            left_l = view_space((left_l, 0.0))
-            left_r = view_space((left_r, 0.0))
-            stage_channel[left_l[1]][left_l[0]] = 1
-            stage_channel[left_r[1]][left_r[0]] = 1
-        
-        right_height, right_l, right_r = melee.stages.right_platform_position(stage)
-        if right_height:
-            right_l = view_space((right_l, 0.0))
-            right_r = view_space((right_r, 0.0))
-            stage_channel[right_l[1]][right_l[0]] = 1
-            stage_channel[right_r[1]][right_r[0]] = 1
+        top_y, top_l, top_r = melee.stages.top_platform_position(stage)
+        if top_y:
+            top_l = view_space((top_l, top_y), IMG_SIZE)
+            top_r = view_space((top_r, top_y), IMG_SIZE)
+            for x in range(top_l[0], top_r[0]):
+                stage_channel[top_l[1]][x] = 1
 
-        return [stage_channel]
+        left_y, left_l, left_r = melee.stages.left_platform_position(stage)
+        if left_y:
+            left_l = view_space((left_l, left_y), IMG_SIZE)
+            left_r = view_space((left_r, left_y), IMG_SIZE)
+            for x in range(left_l[0], left_r[0]):
+                stage_channel[left_l[1]][x] = 1
+
+        right_y, right_l, right_r = melee.stages.right_platform_position(stage)
+        if right_y:
+            right_l = view_space((right_l, right_y), IMG_SIZE)
+            right_r = view_space((right_r, right_y), IMG_SIZE)
+            for x in range(right_l[0], right_r[0]):
+                stage_channel[right_l[1]][x] = 1
+
+        # Create character hurtbox channel.
+        # Hurtbox is based on size, since we don't have precise data.
+        char_channel = np.zeros([IMG_SIZE, IMG_SIZE])
+        for player_id in [1, 2]:
+            player: melee.PlayerState = gamestate.players[player_id]
+            p_size = self.framedata.characterdata[player.character]["size"]
+            pw = int(((p_size * 2) / (X_MAX - X_MIN)) * IMG_SIZE)
+            ph = int(((p_size * 2) / (Y_MAX - Y_MIN)) * IMG_SIZE)
+            px, py = view_space((player.position.x, player.position.y), IMG_SIZE)
+            draw_box(
+                px - pw // 2,
+                py,
+                pw,
+                ph,
+                char_channel,
+            )
+
+        return [stage_channel, char_channel]
 
     def insert_obs(
         self, obs: np.ndarray, frame_stack: list[np.ndarray]
@@ -385,6 +405,15 @@ class MeleeEnv(Env):
             frame_stack[i] = frame_stack[i - 1]
         frame_stack[0] = obs
         return frame_stack
+
+
+def draw_box(x: int, y: int, w: int, h: int, channel: np.ndarray):
+    """
+    Draws a non rotated box.
+    """
+    for y_ in range(y, y + h):
+        for x_ in range(x, x + w):
+            channel[y_][x_] = 1
 
 
 def compute_stats_single(
@@ -402,15 +431,15 @@ def compute_stats_single(
     return stats
 
 
-def view_space(point: tuple[float, float]) -> tuple[float, float]:
+def view_space(point: tuple[float, float], img_size: int) -> tuple[int, int]:
     """
     Converts a world point into a stage point.
     """
     x, y = point
     x_range = X_MAX - X_MIN
     y_range = Y_MAX - Y_MIN
-    x = int((x - X_MIN) / x_range)
-    y = int((y - Y_MIN) / y_range)
+    x = int(((x - X_MIN) / x_range) * img_size)
+    y = int(((y - Y_MIN) / y_range) * img_size)
     return (x, y)
 
 

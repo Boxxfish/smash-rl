@@ -625,12 +625,12 @@ fn add_retrieval(
     top_k: usize,
     retrieval_ctx: &Arc<RwLock<RetrievalContext>>,
 ) -> Vec<Tensor> {
-    // let n_obs = retrieval_ctx
-    //     .read()
-    //     .unwrap()
-    //     .search_from_obs(&orig_obs[0], &orig_obs[1], top_k);
-    // orig_obs.push(n_obs.0);
-    // orig_obs.push(n_obs.1);
+    let n_obs = retrieval_ctx
+        .read()
+        .unwrap()
+        .search_from_obs(&orig_obs[0], &orig_obs[1], top_k);
+    orig_obs.push(n_obs.0);
+    orig_obs.push(n_obs.1);
     orig_obs
 }
 

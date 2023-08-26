@@ -51,6 +51,7 @@ eval_steps = 5  # Number of eval runs to perform.
 max_eval_steps = 500  # Max number of steps to take during each eval run.
 num_workers = 8
 top_k = 4
+entropy_coeff = 0.003
 device = torch.device("cuda")  # Device to use during training.
 
 # Argument parsing
@@ -461,6 +462,9 @@ if __name__ == "__main__":
         except Exception as e:
             print(e)
             continue
+        
+        avg_train_reward = reward_buf.mean().item()
+
         buffer_spatial.states.copy_(obs_1_buf)
         buffer_stats.states.copy_(obs_2_buf)
         buffer_n_spatial.states.copy_(obs_3_buf)
@@ -497,7 +501,7 @@ if __name__ == "__main__":
             discount,
             lambda_,
             epsilon,
-            entropy_coeff=0.0003,
+            entropy_coeff=entropy_coeff,
         )
         buffer_spatial.clear()
         buffer_stats.clear()
@@ -518,6 +522,7 @@ if __name__ == "__main__":
                 "avg_p_loss": total_p_loss / train_iters,
                 "kl_div": kl_div,
                 "entropy": avg_entropy,
+                "avg_train_reward": avg_train_reward,
             }
         )
 

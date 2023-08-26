@@ -354,7 +354,7 @@ if __name__ == "__main__":
                         index.add(np.float32(keys[i]), part_id * max_per_part + i)
                     index.dump("temp/index.bin")
 
-                    with open("episode_data.json", "w") as wfile:
+                    with open("temp/episode_data.json", "w") as wfile:
                         json.dump(episode_datas, wfile)
                     keys_spatial = []
                     keys_stats = []
