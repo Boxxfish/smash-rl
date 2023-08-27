@@ -9,12 +9,12 @@ import random
 from gymnasium.wrappers.time_limit import TimeLimit
 import pygame
 
-IMG_SIZE = 128
-IMG_SCALE = 4
-X_MIN = -246
-X_MAX = 246
-Y_MIN = -140
-Y_MAX = 188
+IMG_SIZE = 32
+IMG_SCALE = 8
+X_MIN = -100
+X_MAX = 100
+Y_MIN = -100
+Y_MAX = 100
 
 ACTION_MAP = {
     # Idle
@@ -140,12 +140,18 @@ ACTION_MAP = {
 }
 STATE_COUNT = max(ACTION_MAP.values()) + 1
 
+PROJECTILE_MAP = {
+    melee.ProjectileType.FOX_LASER: {
+        "w": 16,
+        "h": 4,
+    }
+}
+
 
 class MeleeEnv(Env):
     """
     Environment that wraps a Dolphin emulator.
     The agent is randomly assigned as player 1 or 2.
-    The action space is [buttons (5), main stick (7), control stick (5)].
     """
 
     def __init__(
@@ -159,9 +165,9 @@ class MeleeEnv(Env):
             dolphin_home_path=dolphin_home_path, tmp_home_directory=False
         )
         self.console.connect()
-        self.action_space = gym.spaces.Tuple(
-            [gym.spaces.Discrete(5), gym.spaces.Discrete(7), gym.spaces.Discrete(5)]
-        )
+        self.action_space = gym.spaces.Discrete(
+            1 + 5 * 7 + 4
+        )  # Null action, cartesian set of buttons and main stick directions, and c stick directions
         self.pads = [
             melee.Controller(self.console, port=1),
             melee.Controller(self.console, port=2),
@@ -205,6 +211,13 @@ class MeleeEnv(Env):
             np.zeros([self.num_channels, IMG_SIZE, IMG_SIZE])
             for _ in range(self.num_frames)
         ]
+        self.bot_frame_stack = [
+            np.zeros([self.num_channels, IMG_SIZE, IMG_SIZE])
+            for _ in range(self.num_frames)
+        ]
+
+        self.last_player_percent = 0.0
+        self.last_bot_percent = 0.0
 
         self.render_mode = render_mode
         self.view_channels = view_channels
@@ -216,25 +229,10 @@ class MeleeEnv(Env):
             self.clock = pygame.time.Clock()
 
     def step(
-        self, action: tuple[int, int, int]
+        self, action: int
     ) -> tuple[tuple[np.ndarray, np.ndarray], float, bool, bool, dict[str, Any]]:
         # Handle inputs
-        button, main_stick, c_stick = action
-        if self.last_button is not button:
-            self.pads[self.player_pad].press_button(self.button_list[button])
-            if self.last_button is not None:
-                self.pads[self.player_pad].release_button(
-                    self.button_list[self.last_button]
-                )
-        self.last_button = button
-        main_stick_dir = self.main_stick_dir[main_stick]
-        c_stick_dir = self.c_stick_dir[c_stick]
-        self.pads[self.player_pad].tilt_analog(
-            Button.BUTTON_MAIN, main_stick_dir[0], main_stick_dir[1]
-        )
-        self.pads[self.player_pad].tilt_analog(
-            Button.BUTTON_C, c_stick_dir[0], c_stick_dir[1]
-        )
+        self.process_input(action, self.player_pad)
 
         # Step and get gamestate
         gamestate = self.console.step()
@@ -264,6 +262,15 @@ class MeleeEnv(Env):
         if stocks1 == 0 or stocks2 == 0:
             done = True
 
+        # Add exploration reward
+        player_percent = gamestate.players[self.player_pad + 1].percent
+        bot_percent = gamestate.players[2 - self.player_pad].percent
+        diff_player = player_percent - self.last_player_percent
+        diff_bot = bot_percent - self.last_bot_percent
+        reward += (diff_bot - diff_player) / 100.0
+        self.last_player_percent = player_percent
+        self.last_bot_percent = bot_percent
+
         # Generate stats
         self.player_stats = compute_stats_single(
             gamestate, self.player_pad, self.framedata
@@ -277,8 +284,16 @@ class MeleeEnv(Env):
         self.player_frame_stack = self.insert_obs(
             np.stack(channels), self.player_frame_stack
         )
+        channels = self.gen_channels(gamestate, player_id=1 - self.player_pad)
+        self.bot_frame_stack = self.insert_obs(np.stack(channels), self.bot_frame_stack)
 
-        return (np.array([]), np.array([])), reward, done, False, {}
+        return (
+            (np.stack(self.player_frame_stack), self.player_stats),
+            reward,
+            done,
+            False,
+            {},
+        )
 
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[dict[str, Any]] = None
@@ -292,11 +307,15 @@ class MeleeEnv(Env):
         self.pads[1].flush()
 
         # Hold down speed delimiter
-        # self.pads[0].press_button(Button.BUTTON_D_RIGHT)
-        # self.pads[0].flush()
+        self.pads[0].press_button(Button.BUTTON_D_RIGHT)
+        self.pads[0].flush()
 
         # Two second delay to skip loading screen
-        time.sleep(2.0)
+        time.sleep(1.5)
+
+        # Release speed delimiter
+        self.pads[0].release_all()
+        self.pads[0].flush()
 
         self.player_pad = random.randrange(0, 2)
 
@@ -316,15 +335,48 @@ class MeleeEnv(Env):
             np.zeros([self.num_channels, IMG_SIZE, IMG_SIZE])
             for _ in range(self.num_frames)
         ]
+        self.bot_frame_stack = [
+            np.zeros([self.num_channels, IMG_SIZE, IMG_SIZE])
+            for _ in range(self.num_frames)
+        ]
 
-        return (np.array([]), np.array([])), {}
+        self.last_player_percent = 0.0
+        self.last_bot_percent = 0.0
+
+        return (np.stack(self.player_frame_stack), self.player_stats), {}
+
+    def process_input(self, action: int, pad_id: int):
+        if action == 0:
+            self.pads[pad_id].release_all()
+        elif action < 1 + 5 * 7:
+            action_idx = action - 1
+            button_idx = action_idx // 7
+
+            if self.last_button is not button_idx:
+                self.pads[pad_id].press_button(self.button_list[button_idx])
+                if self.last_button is not None:
+                    self.pads[pad_id].release_button(self.button_list[self.last_button])
+            self.last_button = button_idx
+
+            dir_idx = action_idx - button_idx * 7
+            main_stick_dir = self.main_stick_dir[dir_idx]
+            self.pads[pad_id].tilt_analog(
+                Button.BUTTON_MAIN, main_stick_dir[0], main_stick_dir[1]
+            )
+        else:
+            self.pads[pad_id].release_all()
+            c_idx = action - (1 + 5 * 7)
+            c_stick_dir = self.c_stick_dir[c_idx]
+            self.pads[pad_id].tilt_analog(
+                Button.BUTTON_C, c_stick_dir[0], c_stick_dir[1]
+            )
 
     def render(self):
         if self.render_mode == "human":
             channels = self.player_frame_stack[0]
             r = channels[self.view_channels[0]]
             g = channels[self.view_channels[1]]
-            b = r  # channels[self.view_channels[2]]
+            b = channels[self.view_channels[2]]
             view = np.flip(np.stack([r, g, b]).transpose(2, 1, 0), 1).clip(0, 1) * 255.0
             view_surf = pygame.Surface([IMG_SIZE, IMG_SIZE])
             pygame.surfarray.blit_array(view_surf, view)
@@ -340,8 +392,6 @@ class MeleeEnv(Env):
         """
         Converts `gamestate` into observation channels for a player.
         """
-        # player: melee.PlayerState = gamestate.players[player_id + 1]
-
         # Create stage channel
         stage = gamestate.stage
         stage_channel = np.zeros([IMG_SIZE, IMG_SIZE])
@@ -375,14 +425,17 @@ class MeleeEnv(Env):
             for x in range(right_l[0], right_r[0]):
                 stage_channel[right_l[1]][x] = 1
 
+        # Entity channel determines who owns a hitbox or hurtbox
+        entity_channel = np.zeros([IMG_SIZE, IMG_SIZE])
+
         # Create character hurtbox channel.
         # Hurtbox is based on size, since we don't have precise data.
         char_channel = np.zeros([IMG_SIZE, IMG_SIZE])
         for player_id in [1, 2]:
             player: melee.PlayerState = gamestate.players[player_id]
-            p_size = self.framedata.characterdata[player.character]["size"]
-            pw = int(((p_size * 2) / (X_MAX - X_MIN)) * IMG_SIZE)
-            ph = int(((p_size * 2) / (Y_MAX - Y_MIN)) * IMG_SIZE)
+            p_size = self.framedata.characterdata[player.character]["size"] * 2
+            pw = int((p_size / (X_MAX - X_MIN)) * IMG_SIZE)
+            ph = int((p_size / (Y_MAX - Y_MIN)) * IMG_SIZE)
             px, py = view_space((player.position.x, player.position.y), IMG_SIZE)
             draw_box(
                 px - pw // 2,
@@ -391,8 +444,70 @@ class MeleeEnv(Env):
                 ph,
                 char_channel,
             )
+            if player_id - 1 == self.player_pad:
+                draw_box(
+                    px - pw // 2,
+                    py,
+                    pw,
+                    ph,
+                    entity_channel,
+                )
 
-        return [stage_channel, char_channel]
+        # Create hitbox channel.
+        hit_channel = np.zeros([IMG_SIZE, IMG_SIZE])
+
+        # Projectiles
+        projectiles: list[melee.Projectile] = gamestate.projectiles
+        for proj in projectiles:
+            px, py = view_space((proj.position.x, proj.position.y), IMG_SIZE)
+            if proj.type in PROJECTILE_MAP:
+                p_data = PROJECTILE_MAP[proj.type]
+                w = int((p_data["w"] / (X_MAX - X_MIN)) * IMG_SIZE)
+                h = int((p_data["h"] / (Y_MAX - Y_MIN)) * IMG_SIZE)
+                draw_box(px - w // 2, py - h // 2, w, h, hit_channel)
+
+                if proj.owner - 1 == self.player_pad:
+                    draw_box(
+                        px - w // 2,
+                        py - h // 2,
+                        w,
+                        h,
+                        entity_channel,
+                    )
+
+        # Attack hitboxes.
+        # Hitboxes are based on size, since we don't have precise values.
+        for player_id in [1, 2]:
+            player = gamestate.players[player_id]
+            frame_data = self.framedata.framedata[player.character][player.action][
+                player.action_frame
+            ]
+            if len(frame_data) == 0:
+                continue
+            for i in range(4):
+                hit_id = i + 1
+                if frame_data[f"hitbox_{hit_id}_status"]:
+                    y = player.position.y + frame_data[f"hitbox_{hit_id}_y"]
+                    x = frame_data[f"hitbox_{hit_id}_x"]
+                    if not player.facing:
+                        x = -x
+                    x += player.position.x
+                    hx, hy = view_space((x, y), IMG_SIZE)
+                    h_size = frame_data[f"hitbox_{hit_id}_size"] * 2
+                    w = int((h_size / (X_MAX - X_MIN)) * IMG_SIZE)
+                    h = int((h_size / (Y_MAX - Y_MIN)) * IMG_SIZE)
+                    draw_box(hx - w // 2, hy - h // 2, w, h, hit_channel)
+
+                    if player_id - 1 == self.player_pad:
+                        draw_box(
+                            hx - w // 2,
+                            hy - h // 2,
+                            w,
+                            h,
+                            entity_channel,
+                        )
+
+        return [stage_channel, char_channel, hit_channel, entity_channel]
 
     def insert_obs(
         self, obs: np.ndarray, frame_stack: list[np.ndarray]
@@ -406,11 +521,34 @@ class MeleeEnv(Env):
         frame_stack[0] = obs
         return frame_stack
 
+    def bot_obs(self) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Non-standard method for single agent envs.
+        Returns an observation for the bot. This observation is manually frame
+        stacked.
+        """
+        return (
+            np.stack(self.bot_frame_stack),
+            np.concatenate([self.bot_stats, self.player_stats]),
+        )
+
+    def bot_step(self, action: int):
+        """
+        Non-standard method for single agent envs.
+        Sets the action of the bot. Should be called before `step`.
+        """
+        self.process_input(action, 1 - self.player_pad)
+
 
 def draw_box(x: int, y: int, w: int, h: int, channel: np.ndarray):
     """
     Draws a non rotated box.
     """
+    y_max, x_max = channel.shape
+    x = max(min(x, x_max - 1), 0)
+    y = max(min(y, y_max - 1), 0)
+    w = max(max(min(x + w, x_max - 1), 0) - x, 1)
+    h = max(max(min(y + h, y_max - 1), 0) - y, 1)
     for y_ in range(y, y + h):
         for x_ in range(x, x + w):
             channel[y_][x_] = 1
@@ -425,9 +563,9 @@ def compute_stats_single(
     stats[1] = int(player.facing)
     stats[2] = player.jumps_left
     if player.action in ACTION_MAP:
-        stats[
-            3 + ACTION_MAP[player.action]
-        ] = player.action_frame / framedata.frame_count(player.character, player.action)
+        stats[3 + ACTION_MAP[player.action]] = player.action_frame / max(
+            framedata.frame_count(player.character, player.action), 1
+        )
     return stats
 
 
@@ -453,6 +591,8 @@ if __name__ == "__main__":
     act_space = env.action_space
     obs, _ = env.reset()
     while True:
+        bot_action = act_space.sample()
+        env.env.bot_step(bot_action)  # type: ignore
         action = act_space.sample()
         obs, _, done, trunc, _ = env.step(action)
         env.render()
