@@ -8,6 +8,7 @@ from melee import Button, Action
 import random
 from gymnasium.wrappers.time_limit import TimeLimit
 import pygame
+import os
 
 IMG_SIZE = 32
 IMG_SCALE = 8
@@ -156,7 +157,7 @@ class MeleeEnv(Env):
 
     def __init__(
         self,
-        dolphin_home_path: str,
+        dolphin_home_path: str = os.environ["HOME"] + "/.config/SlippiOnline/",
         view_channels: tuple[int, int, int] = (0, 1, 2),
         render_mode: Optional[str] = None,
         num_frames: int = 4,
@@ -165,6 +166,15 @@ class MeleeEnv(Env):
             dolphin_home_path=dolphin_home_path, tmp_home_directory=False
         )
         self.console.connect()
+        self.num_channels = 4
+        self.observation_space = gym.spaces.Tuple(
+            [
+                gym.spaces.Box(
+                    -1.0, 1.0, [num_frames, self.num_channels, IMG_SIZE, IMG_SIZE]
+                ),
+                gym.spaces.Box(-1.0, 2.0, [(3 + STATE_COUNT) * 2]),
+            ]
+        )
         self.action_space = gym.spaces.Discrete(
             1 + 5 * 7 + 4
         )  # Null action, cartesian set of buttons and main stick directions, and c stick directions
@@ -198,11 +208,10 @@ class MeleeEnv(Env):
             (-1.0, 0.5),  # Left
             (1.0, 0.5),  # Right
         ]
-        self.last_button: Optional[int] = None
+        self.last_buttons: list[Optional[int]] = [None, None]
         self.framedata = melee.framedata.FrameData()
         self.last_stocks1 = 0
         self.last_stocks2 = 0
-        self.num_channels = 4
         self.framedata = melee.FrameData()
 
         # Spatial stuff
@@ -218,6 +227,8 @@ class MeleeEnv(Env):
 
         self.last_player_percent = 0.0
         self.last_bot_percent = 0.0
+
+        self.paused = False
 
         self.render_mode = render_mode
         self.view_channels = view_channels
@@ -236,6 +247,13 @@ class MeleeEnv(Env):
 
         # Step and get gamestate
         gamestate = self.console.step()
+        start_time = time.time()
+        while (time.time() - start_time) < (1 / 60):
+            stocks1 = int(gamestate.players[1].stock)
+            stocks2 = int(gamestate.players[2].stock)
+            if stocks1 == 0 or stocks2 == 0 or gamestate.menu_state is not melee.Menu.IN_GAME:
+                break
+            gamestate = self.console.step()
 
         # Handle losing a stock
         done = False
@@ -259,8 +277,12 @@ class MeleeEnv(Env):
             else:
                 reward = 1.0
 
-        if stocks1 == 0 or stocks2 == 0:
+        info = {}
+        if stocks1 == 0 or stocks2 == 0 or gamestate.menu_state is not melee.Menu.IN_GAME:
             done = True
+            info["player_won"] = (stocks2 == 0 and self.player_pad == 0) or (
+                stocks1 == 0 and self.player_pad == 1
+            )
 
         # Add exploration reward
         player_percent = gamestate.players[self.player_pad + 1].percent
@@ -288,16 +310,28 @@ class MeleeEnv(Env):
         self.bot_frame_stack = self.insert_obs(np.stack(channels), self.bot_frame_stack)
 
         return (
-            (np.stack(self.player_frame_stack), self.player_stats),
+            (
+                np.stack(self.player_frame_stack),
+                np.concatenate([self.player_stats, self.bot_stats]),
+            ),
             reward,
             done,
             False,
-            {},
+            info,
         )
 
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[dict[str, Any]] = None
     ) -> tuple[tuple[np.ndarray, np.ndarray], dict[str, Any]]:
+        # Unpause if paused
+        if self.paused:            
+            self.pads[0].press_button(Button.BUTTON_D_LEFT)
+            self.pads[0].flush()
+            time.sleep(0.1)
+            self.pads[0].release_button(Button.BUTTON_D_LEFT)
+            self.pads[0].flush()
+            self.paused = False
+
         # Reload state
         self.pads[0].press_button(Button.BUTTON_D_DOWN)
         self.pads[0].flush()
@@ -342,8 +376,12 @@ class MeleeEnv(Env):
 
         self.last_player_percent = 0.0
         self.last_bot_percent = 0.0
+        self.last_buttons = [None, None]
 
-        return (np.stack(self.player_frame_stack), self.player_stats), {}
+        return (
+            np.stack(self.player_frame_stack),
+            np.concatenate([self.player_stats, self.bot_stats]),
+        ), {}
 
     def process_input(self, action: int, pad_id: int):
         if action == 0:
@@ -352,11 +390,12 @@ class MeleeEnv(Env):
             action_idx = action - 1
             button_idx = action_idx // 7
 
-            if self.last_button is not button_idx:
+            last_button = self.last_buttons[pad_id]
+            if last_button is not button_idx:
                 self.pads[pad_id].press_button(self.button_list[button_idx])
-                if self.last_button is not None:
-                    self.pads[pad_id].release_button(self.button_list[self.last_button])
-            self.last_button = button_idx
+                if last_button is not None:
+                    self.pads[pad_id].release_button(self.button_list[last_button])
+            self.last_buttons[pad_id] = button_idx
 
             dir_idx = action_idx - button_idx * 7
             main_stick_dir = self.main_stick_dir[dir_idx]
@@ -539,6 +578,18 @@ class MeleeEnv(Env):
         """
         self.process_input(action, 1 - self.player_pad)
 
+    def pause(self):
+        """
+        Pauses the simulation.
+        Resetting automatically unpauses.
+        """
+        self.pads[0].press_button(Button.BUTTON_D_LEFT)
+        self.pads[0].flush()
+        time.sleep(0.1)
+        self.pads[0].release_button(Button.BUTTON_D_LEFT)
+        self.pads[0].flush()
+        self.paused = True
+
 
 def draw_box(x: int, y: int, w: int, h: int, channel: np.ndarray):
     """
@@ -585,7 +636,7 @@ import os
 
 if __name__ == "__main__":
     env = TimeLimit(
-        MeleeEnv(os.environ["HOME"] + "/.config/SlippiOnline/", render_mode="human"),
+        MeleeEnv(render_mode="human"),
         1000,
     )
     act_space = env.action_space
