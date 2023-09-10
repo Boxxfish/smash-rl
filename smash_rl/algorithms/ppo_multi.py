@@ -94,8 +94,9 @@ def train_ppo(
             avg_kl_div += new_kl
 
             entropy = new_act_distr.entropy().mean()
-            term1 = (new_act_probs - old_act_probs).exp() * advantages.squeeze()
-            term2 = (1.0 + epsilon * advantages.squeeze().sign()) * advantages.squeeze()
+            ratio = (new_act_probs - old_act_probs).exp()
+            term1 = ratio * advantages.squeeze()
+            term2 = torch.clamp(ratio, 1.0 - epsilon, 1.0 + epsilon) * advantages.squeeze()
             p_loss = (
                 -(term1.min(term2).mean() + entropy * entropy_coeff)
             ) / gradient_steps
