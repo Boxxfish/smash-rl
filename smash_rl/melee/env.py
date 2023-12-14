@@ -247,6 +247,7 @@ class MeleeEnv(Env):
 
         self.render_mode = render_mode
         self.view_channels = view_channels
+        self.frame = 0
         if self.render_mode == "human":
             pygame.init()
             self.screen = pygame.display.set_mode(
@@ -265,6 +266,7 @@ class MeleeEnv(Env):
             self.process_input(action, self.player_pad)
             gamestate = self.console.step()
             frames_skipped += 1
+        self.frame = int(gamestate.frame)
         # time.sleep(0.1)
 
         # Handle losing a stock
