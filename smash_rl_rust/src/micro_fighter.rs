@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::time::TimeUpdateStrategy;
 use bevy_rapier2d::prelude::*;
 use pyo3::prelude::*;
 use rand::Rng;
@@ -15,7 +16,7 @@ use crate::ml::MLPlugin;
 use crate::ml::NetDamage;
 use crate::move_states::*;
 
-pub const FIXED_TIMESTEP: f32 = 1.0 / 60.0;
+pub const FIXED_TIMESTEP: f32 = 1.0 / 30.0;
 pub const SCREEN_SIZE: u32 = 400;
 
 // Collision groups:
@@ -116,7 +117,17 @@ impl MicroFighter {
         if human {
             app.add_plugin(HumanPlugin);
         } else {
-            app.add_plugin(MLPlugin);
+            app.add_plugin(MLPlugin)
+                .insert_resource(TimeUpdateStrategy::ManualDuration(
+                    std::time::Duration::from_secs_f32(FIXED_TIMESTEP),
+                ))
+                .insert_resource(RapierConfiguration {
+                    timestep_mode: TimestepMode::Fixed {
+                        dt: FIXED_TIMESTEP,
+                        substeps: 2,
+                    },
+                    ..default()
+                });
         }
         app.add_plugin(RapierPhysicsPlugin::<NoUserData>::pixels_per_meter(100.0))
             .add_plugin(CharacterPlugin)

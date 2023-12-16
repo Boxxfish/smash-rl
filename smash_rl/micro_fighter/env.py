@@ -63,6 +63,7 @@ class BaseMFEnv(gym.Env):
         self.action_space = gym.spaces.Discrete(9)
         self.player_stats = np.zeros([18])
         self.bot_stats = np.zeros([18])
+        self.bot_action = 0
         self.render_mode = render_mode
         self.num_frames = num_frames
         self.player_frame_stack = [
@@ -201,7 +202,7 @@ class BaseMFEnv(gym.Env):
                 view_surf, [IMG_SIZE * IMG_SCALE, IMG_SIZE * IMG_SCALE], self.screen
             )
             pygame.display.flip()
-            self.clock.tick(60)
+            self.clock.tick(60 / self.num_frames)
 
     def player_obs(self) -> tuple[np.ndarray, np.ndarray]:
         """
@@ -230,7 +231,7 @@ class BaseMFEnv(gym.Env):
         Non-standard method for single agent envs.
         Sets the action of the bot. Should be called before `step`.
         """
-        self.game.bot_step(action)
+        self.bot_action = action
 
     def state(self) -> EnvState:
         """
@@ -315,6 +316,7 @@ class MFEnv(BaseMFEnv):
         skip_frames = self.max_skip_frames
         dmg_reward = 0.0
         for _ in range(skip_frames + 1):
+            self.game.bot_step(self.bot_action)
             step_output = self.game.step(action)
             dmg_reward += step_output.net_damage
             if step_output.round_over:
@@ -339,11 +341,7 @@ class MFEnv(BaseMFEnv):
         if terminated:
             round_reward = 1.0 if step_output.player_won else -1.0
 
-        curr_dist = step_output.player_pos[0] ** 2 / 200**2
-        delta_dist = curr_dist - self.last_dist
-        self.last_dist = curr_dist
-
-        dmg_reward = dmg_reward / 10 - delta_dist
+        dmg_reward = dmg_reward / 10
 
         reward = dmg_reward * (self.dmg_reward_amount) + round_reward
 

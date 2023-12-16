@@ -427,6 +427,7 @@ if __name__ == "__main__":
         p_net_path,
         top_k,
         start_elo,
+        True
     )
     del retrieval_ctx, test_env, encoder, pca
 

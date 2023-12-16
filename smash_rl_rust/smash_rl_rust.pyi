@@ -65,6 +65,7 @@ class RolloutContext:
         first_bot_path: str,
         top_k: int,
         initial_elo: float,
+        use_retrieval: bool,
     ) -> None: ...
     def rollout(
         self,

@@ -38,6 +38,7 @@ pub struct MFEnv {
     pub view_channels: (u32, u32, u32),
     pub time_limit: u32,
     pub current_time: u32,
+    pub bot_action: u32,
 }
 
 pub struct MFEnvInfo {
@@ -117,6 +118,7 @@ impl MFEnv {
             view_channels,
             time_limit,
             current_time,
+            bot_action: 0,
         }
     }
 
@@ -127,6 +129,7 @@ impl MFEnv {
         let step_output = self.game.step(action);
         let mut dmg_reward = step_output.net_damage;
         for _ in 0..(skip_frames) {
+            self.game.bot_step(self.bot_action);
             let step_output = self.game.step(action);
             dmg_reward += step_output.net_damage;
             if step_output.round_over {
@@ -170,11 +173,7 @@ impl MFEnv {
             round_reward = if step_output.player_won { 1.0 } else { -1.0 };
         }
 
-        let curr_dist = step_output.player_pos.0.pow(2) as f32 / 200_u32.pow(2) as f32;
-        let delta_dist = curr_dist - self.last_dist;
-        self.last_dist = curr_dist;
-
-        let dmg_reward = dmg_reward as f32 / 10.0 - delta_dist;
+        let dmg_reward = dmg_reward as f32 / 100.0;
 
         let reward = dmg_reward * (self.dmg_reward_amount) + round_reward;
 
@@ -346,7 +345,7 @@ impl MFEnv {
     }
 
     pub fn bot_step(&mut self, action: u32) {
-        self.game.bot_step(action);
+        self.bot_action = action;
     }
 
     pub fn set_dmg_reward_amount(&mut self, amount: f32) {

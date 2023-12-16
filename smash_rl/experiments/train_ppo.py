@@ -34,16 +34,16 @@ _: Any
 # Hyperparameters
 num_envs = 32  # Number of environments to step through at once during sampling.
 train_steps = 128  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
-iterations = 1000  # Number of sample/train iterations.
+iterations = 4000  # Number of sample/train iterations.
 train_iters = 2  # Number of passes over the samples collected.
 train_batch_size = 512  # Minibatch size while training models.
 discount = 0.995  # Discount factor applied to rewards.
 lambda_ = 0.95  # Lambda for GAE.
 epsilon = 0.2  # Epsilon for importance sample clipping.
 v_lr = 0.001  # Learning rate of the value net.
-p_lr = 0.0003  # Learning rate of the policy net.
+p_lr = 0.0001  # Learning rate of the policy net.
 num_frames = 4  # Number of frames in frame stack.
-max_skip_frames = 1  # Max number of frames to skip.
+max_skip_frames = 2  # Max number of frames to skip.
 time_limit = 1000  # Time limit before truncation.
 bot_update = 20  # Number of iterations before caching the current policy.
 max_bots = 10  # Maximum number of bots to store.
@@ -53,7 +53,7 @@ eval_every = 4  # Number of iterations before evaluating.
 eval_steps = 5  # Number of eval runs to perform.
 max_eval_steps = 500  # Max number of steps to take during each eval run.
 num_workers = 8
-entropy_coeff = 0.003
+entropy_coeff = 0.08
 device = torch.device("cuda")  # Device to use during training.
 
 # Argument parsing
@@ -76,12 +76,15 @@ class SharedNet(nn.Module):
         nn.Module.__init__(self)
         channels = obs_shape_spatial[0] * obs_shape_spatial[1]  # Frames times channels
         self.spatial_net = nn.Sequential(
-            nn.Conv2d(channels, 32, 3, stride=2),
+            nn.Conv2d(channels, 32, 5),
             nn.ReLU(),
-            nn.Conv2d(32, 256, 3, stride=2),
+            nn.Conv2d(32, 256, 3),
+            nn.MaxPool2d(2),
             nn.ReLU(),
-            nn.Conv2d(256, 256, 3, stride=2),
+            nn.Conv2d(256, 16, 3),
+            nn.MaxPool2d(2),
             nn.ReLU(),
+            nn.Flatten(),
         )
         self.stats_net = nn.Sequential(
             nn.Linear(obs_shape_stats, 128),
@@ -92,7 +95,7 @@ class SharedNet(nn.Module):
             nn.ReLU(),
         )
         self.net2 = nn.Sequential(
-            nn.Linear(512, 512),
+            nn.Linear(256 + 400, 512),
             nn.ReLU(),
             nn.Linear(512, 512),
             nn.ReLU(),
@@ -101,7 +104,6 @@ class SharedNet(nn.Module):
     def forward(self, spatial: torch.Tensor, stats: torch.Tensor):
         spatial = torch.flatten(spatial, 1, 2)
         spatial = self.spatial_net(spatial)
-        spatial = torch.max(torch.max(spatial, dim=3).values, dim=2).values
 
         stats = self.stats_net(stats)
 
@@ -634,6 +636,7 @@ if __name__ == "__main__":
         p_net_path,
         0,
         1200,
+        False
     )
 
     for step in tqdm(range(iterations), position=0):
@@ -641,8 +644,6 @@ if __name__ == "__main__":
         rollout_context.set_expl_reward_amount(1.0 - percent_done)
 
         # Collect experience
-        print("Performing rollouts...", end="")
-        curr_time = time.time()
         traced = torch.jit.trace(
             p_net,
             (
@@ -652,7 +653,7 @@ if __name__ == "__main__":
         )
         traced.save(p_net_path)
         (
-            (obs_1_buf, obs_2_buf, _, _),
+            (obs_1_buf, obs_2_buf),
             act_buf,
             act_probs_buf,
             reward_buf,
@@ -670,7 +671,6 @@ if __name__ == "__main__":
         buffer_spatial.rewards.copy_(reward_buf)
         buffer_spatial.dones.copy_(done_buf)
         buffer_spatial.truncs.copy_(trunc_buf)
-        print(f" took {time.time() - curr_time} seconds.")
 
         # Train
         total_p_loss, total_v_loss, kl_div = train_ppo(

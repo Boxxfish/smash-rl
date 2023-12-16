@@ -200,23 +200,29 @@ impl WorkerContext {
         num_frames: u32,
         time_limit: u32,
         top_k: u32,
-        retrieval_ctx: &Arc<RwLock<RetrievalContext>>,
+        retrieval_ctx: Option<&Arc<RwLock<RetrievalContext>>>,
     ) -> Self {
         let mut env = VecEnv::new(
             (0..num_envs)
                 .map(|_| MFEnv::new(max_skip_frames, num_frames, false, (0, 0, 0), time_limit))
                 .collect(),
         );
-        let last_obs = add_retrieval(env.reset(), top_k as usize, retrieval_ctx);
-        let state_shape = &[
-            env.envs[0].observation_space.as_slice(),
-            vec![
-                vec![top_k as i64, 16, IMG_SIZE as i64, IMG_SIZE as i64],
-                vec![top_k as i64, 181],
+        let last_obs = match retrieval_ctx {
+            Some(retrieval_ctx) => add_retrieval(env.reset(), top_k as usize, retrieval_ctx),
+            None => env.reset(),
+        };
+        let state_shape = match retrieval_ctx {
+            Some(_) => vec![
+                env.envs[0].observation_space.as_slice(),
+                vec![
+                    vec![top_k as i64, 16, IMG_SIZE as i64, IMG_SIZE as i64],
+                    vec![top_k as i64, 181],
+                ]
+                .as_slice(),
             ]
-            .as_slice(),
-        ]
-        .concat();
+            .concat(),
+            None => env.envs[0].observation_space.clone(),
+        };
         let action_count = env.envs[0].action_space as i64;
         let rollout_buffer = RolloutBuffer::new(
             &state_shape.iter().map(|s| s.as_slice()).collect::<Vec<_>>(),
@@ -253,7 +259,7 @@ pub struct RolloutContext {
     w_ctxs: Vec<WorkerContext>,
     bot_nets: Vec<tch::CModule>,
     bot_data: Vec<BotData>,
-    retrieval_ctx: Arc<RwLock<RetrievalContext>>,
+    retrieval_ctx: Option<Arc<RwLock<RetrievalContext>>>,
     top_k: u32,
     test_env: MFEnv,
     p_net: tch::CModule,
@@ -275,18 +281,23 @@ impl RolloutContext {
         first_bot_path: &str,
         top_k: u32,
         initial_elo: f32,
+        use_retrieval: bool,
     ) -> Self {
         // Set up retrieval context
         let encoder = tch::jit::CModule::load("temp/encoder.ptc").unwrap();
         let pca = PCA::load("temp/pca.json");
-        let retrieval_ctx = Arc::new(RwLock::new(RetrievalContext::new(
-            128,
-            "temp/index.bin",
-            "temp/generated",
-            "temp/episode_data.json",
-            encoder,
-            pca,
-        )));
+        let retrieval_ctx = if use_retrieval {
+            Some(Arc::new(RwLock::new(RetrievalContext::new(
+                128,
+                "temp/index.bin",
+                "temp/generated",
+                "temp/episode_data.json",
+                encoder,
+                pca,
+            ))))
+        } else {
+            None
+        };
 
         // Create worker contexts
         let envs_per_worker = total_num_envs / num_workers;
@@ -299,7 +310,7 @@ impl RolloutContext {
                     num_frames,
                     time_limit,
                     top_k,
-                    &retrieval_ctx,
+                    retrieval_ctx.as_ref(),
                 )
             })
             .collect();
@@ -345,7 +356,12 @@ impl RolloutContext {
         let top_k = self.top_k as usize;
 
         let mut handles = Vec::new();
+        let bar = indicatif::MultiProgress::new();
+        let progress =
+            indicatif::ProgressBar::new(self.w_ctxs[0].num_steps as u64 * self.w_ctxs.len() as u64);
+        bar.add(progress.clone());
         for mut w_ctx in self.w_ctxs.drain(0..self.w_ctxs.len()) {
+            let progress = progress.clone();
             let p_net = p_net.clone();
             let bot_nets = bot_nets.clone();
             let retrieval_ctx = self.retrieval_ctx.clone();
@@ -362,7 +378,10 @@ impl RolloutContext {
                             .iter()
                             .map(|t| t.to_kind(tch::Kind::Float).unsqueeze(0))
                             .collect();
-                        let bot_obs = add_retrieval(bot_obs, top_k, &retrieval_ctx);
+                        let bot_obs = match &retrieval_ctx {
+                            Some(retrieval_ctx) => add_retrieval(bot_obs, top_k, &retrieval_ctx),
+                            None => bot_obs,
+                        };
                         let bot_action_probs = bot_nets.read().unwrap()[w_ctx.bot_ids[env_index]]
                             .forward_ts(
                                 &bot_obs
@@ -400,7 +419,11 @@ impl RolloutContext {
                         &dones,
                         &truncs,
                     );
-                    obs = add_retrieval(obs_, top_k, &retrieval_ctx);
+                    progress.inc(1);
+                    obs = match &retrieval_ctx {
+                        Some(retrieval_ctx) => add_retrieval(obs_, top_k, retrieval_ctx),
+                        None => obs_,
+                    };
 
                     // Change opponent when environment ends
                     for env_index in 0..w_ctx.env.num_envs {
@@ -426,6 +449,7 @@ impl RolloutContext {
             self.w_ctxs.push(w_ctx);
             total_entropy += w_total_entropy;
         }
+        progress.finish();
         self.bot_nets.append(bot_nets.write().as_mut().unwrap());
 
         // Copy the contents of each rollout buffer
@@ -530,33 +554,33 @@ impl RolloutContext {
     pub fn perform_eval(&mut self, eval_steps: usize, max_eval_steps: usize, elo_k: u32) {
         let _guard = tch::no_grad_guard();
         let (obs_, _) = self.test_env.reset();
-        let mut obs = add_retrieval(
-            obs_.iter()
-                .map(|o| o.to_kind(tch::Kind::Float).unsqueeze(0))
-                .collect::<Vec<_>>(),
-            self.top_k as usize,
-            &self.retrieval_ctx,
-        )
-        .iter()
-        .map(|t| t.to_kind(tch::Kind::Float))
-        .collect::<Vec<_>>();
+        let mut obs = obs_
+            .iter()
+            .map(|o| o.to_kind(tch::Kind::Float).unsqueeze(0))
+            .collect::<Vec<_>>();
+        if let Some(retrieval_ctx) = &self.retrieval_ctx {
+            obs = add_retrieval(obs, self.top_k as usize, &retrieval_ctx)
+                .iter()
+                .map(|t| t.to_kind(tch::Kind::Float))
+                .collect::<Vec<_>>();
+        }
         let mut rng = rand::thread_rng();
         for _ in 0..eval_steps {
             let eval_bot_index = rng.gen_range(0..self.bot_nets.len());
             let b_elo = self.bot_data[eval_bot_index].elo;
             for _ in 0..max_eval_steps {
-                let bot_obs = add_retrieval(
-                    self.test_env
-                        .bot_obs()
+                let mut bot_obs = self
+                    .test_env
+                    .bot_obs()
+                    .iter()
+                    .map(|o| o.to_kind(tch::Kind::Float).unsqueeze(0))
+                    .collect::<Vec<_>>();
+                if let Some(retrieval_ctx) = &self.retrieval_ctx {
+                    bot_obs = add_retrieval(bot_obs, self.top_k as usize, &retrieval_ctx)
                         .iter()
-                        .map(|o| o.to_kind(tch::Kind::Float).unsqueeze(0))
-                        .collect::<Vec<_>>(),
-                    self.top_k as usize,
-                    &self.retrieval_ctx,
-                )
-                .iter()
-                .map(|t| t.to_kind(tch::Kind::Float))
-                .collect::<Vec<_>>();
+                        .map(|t| t.to_kind(tch::Kind::Float))
+                        .collect::<Vec<_>>();
+                }
                 let bot_action_probs = self.bot_nets[eval_bot_index].forward_ts(&bot_obs).unwrap();
                 let bot_action = sample(&bot_action_probs)[0];
                 self.test_env.bot_step(bot_action);
@@ -564,16 +588,16 @@ impl RolloutContext {
                 let action_probs = self.p_net.forward_ts(&obs).unwrap();
                 let action = sample(&action_probs)[0];
                 let (obs_, _, done, trunc, info) = self.test_env.step(action);
-                obs = add_retrieval(
-                    obs_.iter()
-                        .map(|o| o.to_kind(tch::Kind::Float).unsqueeze(0))
-                        .collect::<Vec<_>>(),
-                    self.top_k as usize,
-                    &self.retrieval_ctx,
-                )
-                .iter()
-                .map(|t| t.to_kind(tch::Kind::Float))
-                .collect::<Vec<_>>();
+                obs = obs_
+                    .iter()
+                    .map(|o| o.to_kind(tch::Kind::Float).unsqueeze(0))
+                    .collect::<Vec<_>>();
+                if let Some(retrieval_ctx) = &self.retrieval_ctx {
+                    obs = add_retrieval(obs, self.top_k as usize, &retrieval_ctx)
+                        .iter()
+                        .map(|t| t.to_kind(tch::Kind::Float))
+                        .collect::<Vec<_>>();
+                }
                 if done || trunc {
                     let (a, b) = if done {
                         if info.player_won {
@@ -592,16 +616,16 @@ impl RolloutContext {
                     self.current_elo += elo_k as f32 * (a - ea);
                     self.bot_data[eval_bot_index].elo = b_elo + elo_k as f32 * (b - eb);
                     let (obs_, _) = self.test_env.reset();
-                    obs = add_retrieval(
-                        obs_.iter()
-                            .map(|o| o.to_kind(tch::Kind::Float).unsqueeze(0))
-                            .collect::<Vec<_>>(),
-                        self.top_k as usize,
-                        &self.retrieval_ctx,
-                    )
-                    .iter()
-                    .map(|t| t.to_kind(tch::Kind::Float))
-                    .collect::<Vec<_>>();
+                    obs = obs_
+                        .iter()
+                        .map(|o| o.to_kind(tch::Kind::Float).unsqueeze(0))
+                        .collect::<Vec<_>>();
+                    if let Some(retrieval_ctx) = &self.retrieval_ctx {
+                        obs = add_retrieval(obs, self.top_k as usize, &retrieval_ctx)
+                            .iter()
+                            .map(|t| t.to_kind(tch::Kind::Float))
+                            .collect::<Vec<_>>();
+                    }
                     break;
                 }
             }
