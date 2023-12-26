@@ -40,7 +40,7 @@ epsilon = 0.2  # Epsilon for importance sample clipping.
 v_lr = 0.001  # Learning rate of the value net.
 p_lr = 0.0003  # Learning rate of the policy net.
 num_frames = 4  # Number of frames in frame stack.
-max_skip_frames = 1  # Max number of frames to skip.
+max_skip_frames = 2  # Max number of frames to skip.
 time_limit = 1000  # Time limit before truncation.
 bot_update = 20  # Number of iterations before caching the current policy.
 max_bots = 10  # Maximum number of bots to store.
@@ -75,12 +75,15 @@ class NeighborEncoder(nn.Module):
         nn.Module.__init__(self)
         channels = neighbor_shape_spatial[1]
         self.spatial_net = nn.Sequential(
-            nn.Conv2d(channels, 32, 3, stride=2),
+            nn.Conv2d(channels, 32, 5),
             nn.ReLU(),
-            nn.Conv2d(32, 128, 3, stride=2),
+            nn.Conv2d(32, 256, 3),
+            nn.MaxPool2d(2),
             nn.ReLU(),
-            nn.Conv2d(128, 128, 3, stride=2),
+            nn.Conv2d(256, 16, 3),
             nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Flatten(),
         )
         self.scalar_net = nn.Sequential(
             nn.Linear(neighbor_shape_scalar + obs_embedding_size, 64),
@@ -91,7 +94,7 @@ class NeighborEncoder(nn.Module):
             nn.ReLU(),
         )
         self.net2 = nn.Sequential(
-            nn.Linear(256, 256),
+            nn.Linear(128 + 400, 256),
             nn.ReLU(),
             nn.Linear(256, 512),
             nn.ReLU(),
@@ -103,17 +106,17 @@ class NeighborEncoder(nn.Module):
         batch_size = spatial.shape[0]
         k = spatial.shape[1]
 
-        spatial = torch.flatten(spatial, 0, 1)
-        spatial = self.spatial_net(spatial)
-        spatial = torch.max(torch.max(spatial, dim=3).values, dim=2).values
+        spatial_shape = list(spatial.shape)
+        scalar_shape = list(scalar.shape)
 
-        scalar = torch.flatten(
-            torch.concatenate(
-                [scalar, obs_embedding.unsqueeze(1).repeat([1, k, 1])], 2
-            ),
-            0,
-            1,
+        spatial = spatial.reshape(
+            [spatial_shape[0] * spatial_shape[1]] + spatial_shape[2:]
         )
+        scalar = scalar.reshape([scalar_shape[0] * scalar_shape[1]] + scalar_shape[2:])
+
+        spatial = self.spatial_net(spatial)
+
+        scalar = torch.concatenate([scalar, obs_embedding.repeat([k, 1])], 1)
         scalar = self.scalar_net(scalar)
 
         x = torch.concat([spatial, scalar], dim=1)
@@ -134,12 +137,15 @@ class SharedNet(nn.Module):
         nn.Module.__init__(self)
         channels = obs_shape_spatial[0] * obs_shape_spatial[1]  # Frames times channels
         self.spatial_net = nn.Sequential(
-            nn.Conv2d(channels, 32, 3, stride=2),
+            nn.Conv2d(channels, 32, 5),
             nn.ReLU(),
-            nn.Conv2d(32, 256, 3, stride=2),
+            nn.Conv2d(32, 64, 3),
+            nn.MaxPool2d(2),
             nn.ReLU(),
-            nn.Conv2d(256, 256, 3, stride=2),
+            nn.Conv2d(64, 16, 3),
+            nn.MaxPool2d(2),
             nn.ReLU(),
+            nn.Flatten(),
         )
         self.stats_net = nn.Sequential(
             nn.Linear(obs_shape_stats, 128),
@@ -150,7 +156,7 @@ class SharedNet(nn.Module):
             nn.ReLU(),
         )
         self.net2 = nn.Sequential(
-            nn.Linear(512, 512),
+            nn.Linear(256 + 400, 512),
             nn.ReLU(),
             nn.Linear(512, 512),
             nn.ReLU(),
@@ -159,7 +165,6 @@ class SharedNet(nn.Module):
     def forward(self, spatial: torch.Tensor, stats: torch.Tensor):
         spatial = torch.flatten(spatial, 1, 2)
         spatial = self.spatial_net(spatial)
-        spatial = torch.max(torch.max(spatial, dim=3).values, dim=2).values
 
         stats = self.stats_net(stats)
 
@@ -236,7 +241,9 @@ class PolicyNet(nn.Module):
         neighbor_scalar: torch.Tensor,
     ):
         x = self.shared(spatial, stats)
+
         neighbor_x = self.neighbor(x, neighbor_spatial, neighbor_scalar)
+
         x = torch.concat([x, neighbor_x], 1)
         x = self.net(x)
         return x
@@ -427,7 +434,7 @@ if __name__ == "__main__":
         p_net_path,
         top_k,
         start_elo,
-        True
+        True,
     )
     del retrieval_ctx, test_env, encoder, pca
 
@@ -463,7 +470,7 @@ if __name__ == "__main__":
         except Exception as e:
             print(e)
             continue
-        
+
         avg_train_reward = reward_buf.mean().item()
 
         buffer_spatial.states.copy_(obs_1_buf)

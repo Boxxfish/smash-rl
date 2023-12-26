@@ -1,6 +1,4 @@
-use std::sync::{Arc, RwLock};
-
-use crate::{micro_fighter::{MicroFighter, StepOutput}, training::RetrievalContext};
+use crate::{micro_fighter::{MicroFighter, StepOutput}};
 use buffer_graphics_lib::prelude::*;
 use minifb::{Window, WindowOptions};
 use tch::Tensor;

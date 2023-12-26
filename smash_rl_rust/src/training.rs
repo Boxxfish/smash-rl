@@ -830,6 +830,7 @@ impl RetrievalContext {
             ])
             .unwrap();
         let keys = self.pca.transform(&encoded);
+        let keys = &keys / keys.square().sum(tch::Kind::Float).sqrt();
         let key_count = keys.size()[0] as usize;
         let mut n_spatials = Vec::with_capacity(key_count);
         let mut n_scalars = Vec::with_capacity(key_count);
