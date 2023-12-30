@@ -53,10 +53,12 @@ num_workers = 8
 top_k = 4
 entropy_coeff = 0.003
 device = torch.device("cuda")  # Device to use during training.
+use_neighbors = True # Whether networks actually incorporate neighbor observations.
 
 # Argument parsing
 parser = ArgumentParser()
 parser.add_argument("--eval", action="store_true")
+parser.add_argument("--compare-retrieval", action="store_true")
 parser.add_argument("--resume", action="store_true")
 args = parser.parse_args()
 
@@ -180,6 +182,7 @@ class ValueNet(nn.Module):
         obs_shape_stats: int,
         neighbor_shape_spatial: torch.Size,
         neighbor_shape_scalar: int,
+        use_neighbors: bool,
     ):
         nn.Module.__init__(self)
         self.shared = SharedNet(obs_shape_spatial, obs_shape_stats)
@@ -193,6 +196,7 @@ class ValueNet(nn.Module):
             nn.ReLU(),
             nn.Linear(512, 1),
         )
+        self.use_neighbors = use_neighbors
         init_orthogonal(self)
 
     def forward(
@@ -203,7 +207,13 @@ class ValueNet(nn.Module):
         neighbor_scalar: torch.Tensor,
     ):
         x = self.shared(spatial, stats)
-        neighbor_x = self.neighbor(x, neighbor_spatial, neighbor_scalar)
+
+        if self.use_neighbors:
+            neighbor_x = self.neighbor(x, neighbor_spatial, neighbor_scalar)
+        else:
+            batch_size = x.shape[0]
+            neighbor_x = torch.zeros([batch_size, 512])
+
         x = torch.concat([x, neighbor_x], 1)
         x = self.net(x)
         return x
@@ -217,6 +227,7 @@ class PolicyNet(nn.Module):
         action_count: int,
         neighbor_shape_spatial: torch.Size,
         neighbor_shape_scalar: int,
+        use_neighbors: bool,
     ):
         nn.Module.__init__(self)
         self.shared = SharedNet(obs_shape_spatial, obs_shape_stats)
@@ -231,6 +242,7 @@ class PolicyNet(nn.Module):
             nn.Linear(512, action_count),
             nn.LogSoftmax(1),
         )
+        self.use_neighbors = use_neighbors
         init_orthogonal(self)
 
     def forward(
@@ -242,7 +254,11 @@ class PolicyNet(nn.Module):
     ):
         x = self.shared(spatial, stats)
 
-        neighbor_x = self.neighbor(x, neighbor_spatial, neighbor_scalar)
+        if self.use_neighbors:
+            neighbor_x = self.neighbor(x, neighbor_spatial, neighbor_scalar)
+        else:
+            batch_size = x.shape[0]
+            neighbor_x = torch.zeros([batch_size, 512])
 
         x = torch.concat([x, neighbor_x], 1)
         x = self.net(x)
@@ -284,6 +300,7 @@ if __name__ == "__main__":
             int(act_space.n),
             torch.Size(neighbor_spatial_obs_space.shape),
             neighbor_scalar_obs_space.shape[1],
+            use_neighbors
         )
         p_net.load_state_dict(torch.load("temp/p_net_retrieval.pt"))
         test_env = TimeLimit(
@@ -341,6 +358,101 @@ if __name__ == "__main__":
                     eval_n_obs_1 = torch.from_numpy(np.array(n_obs_1_)).float()
                     eval_n_obs_2 = torch.from_numpy(np.array(n_obs_2_)).float()
 
+    # Compare agent that uses retrieval with removed retrieval
+    if args.compare_retrieval:
+        test_episodes = 100
+        eval_done = False
+        obs_space = test_env.observation_space
+        act_space = test_env.action_space
+        assert isinstance(obs_space, gym.spaces.Tuple)
+        assert isinstance(obs_space.spaces[0], gym.spaces.Box)
+        assert isinstance(obs_space.spaces[1], gym.spaces.Box)
+        assert isinstance(obs_space.spaces[2], gym.spaces.Box)
+        assert isinstance(obs_space.spaces[3], gym.spaces.Box)
+        spatial_obs_space = obs_space.spaces[0]
+        stats_obs_space = obs_space.spaces[1]
+        neighbor_spatial_obs_space = obs_space.spaces[2]
+        neighbor_scalar_obs_space = obs_space.spaces[3]
+        assert isinstance(act_space, gym.spaces.Discrete)
+        
+        p_net_retrieval = PolicyNet(
+            torch.Size(spatial_obs_space.shape),
+            stats_obs_space.shape[0],
+            int(act_space.n),
+            torch.Size(neighbor_spatial_obs_space.shape),
+            neighbor_scalar_obs_space.shape[1],
+            True
+        )
+        p_net_retrieval.load_state_dict(torch.load("temp/retrieval_vs_no_retrieval/p_net_retrieval_yes_200.pt"))
+
+        p_net_no_retrieval = PolicyNet(
+            torch.Size(spatial_obs_space.shape),
+            stats_obs_space.shape[0],
+            int(act_space.n),
+            torch.Size(neighbor_spatial_obs_space.shape),
+            neighbor_scalar_obs_space.shape[1],
+            False
+        )
+        p_net_no_retrieval.load_state_dict(torch.load("temp/retrieval_vs_no_retrieval/p_net_retrieval_yes_200.pt"))
+
+        test_env = TimeLimit(
+            RetrievalMFEnv(
+                retrieval_ctx,
+                top_k,
+                max_skip_frames=max_skip_frames,
+                num_frames=num_frames,
+            ),
+            100,
+        )
+        with torch.no_grad():
+            retrieval_wins = 0
+            no_retrieval_wins = 0
+            for _ in tqdm(range(test_episodes)):
+                (obs_1_, obs_2_, n_obs_1_, n_obs_2_), _ = test_env.reset()
+                eval_obs_1 = torch.from_numpy(np.array(obs_1_)).float()
+                eval_obs_2 = torch.from_numpy(np.array(obs_2_)).float()
+                eval_n_obs_1 = torch.from_numpy(np.array(n_obs_1_)).float()
+                eval_n_obs_2 = torch.from_numpy(np.array(n_obs_2_)).float()
+                while True:
+                    bot_obs_1, bot_obs_2, bot_n_obs_1, bot_n_obs_2 = test_env.bot_obs()
+                    bot_action_probs = p_net_retrieval(
+                        torch.from_numpy(bot_obs_1).unsqueeze(0).float(),
+                        torch.from_numpy(bot_obs_2).unsqueeze(0).float(),
+                        torch.from_numpy(bot_n_obs_1).unsqueeze(0).float(),
+                        torch.from_numpy(bot_n_obs_2).unsqueeze(0).float(),
+                    ).squeeze()
+                    bot_action = Categorical(logits=bot_action_probs).sample().numpy()
+                    test_env.bot_step(bot_action)
+
+                    action_probs = p_net_no_retrieval(
+                        eval_obs_1.unsqueeze(0),
+                        eval_obs_2.unsqueeze(0),
+                        eval_n_obs_1.unsqueeze(0),
+                        eval_n_obs_2.unsqueeze(0),
+                    ).squeeze()
+                    action = Categorical(logits=action_probs).sample().numpy()
+                    (
+                        (obs_1_, obs_2_, n_obs_1_, n_obs_2_),
+                        reward,
+                        eval_done,
+                        eval_trunc,
+                        eval_info,
+                    ) = test_env.step(action)
+
+                    eval_obs_1 = torch.from_numpy(np.array(obs_1_)).float()
+                    eval_obs_2 = torch.from_numpy(np.array(obs_2_)).float()
+                    eval_n_obs_1 = torch.from_numpy(np.array(n_obs_1_)).float()
+                    eval_n_obs_2 = torch.from_numpy(np.array(n_obs_2_)).float()
+                    if eval_done or eval_trunc:
+                        if eval_done:
+                            if not eval_info["player_won"]:
+                                retrieval_wins += 1
+                            else:
+                                no_retrieval_wins += 1
+                        break
+        print(f"Retrieval win pct: {(retrieval_wins / test_episodes) * 100}%, No retrieval win pct: {(no_retrieval_wins / test_episodes) * 100}%")
+        quit()
+
     wandb.init(
         project="smash-rl",
         entity=entity,
@@ -377,6 +489,7 @@ if __name__ == "__main__":
         stats_obs_space.shape[0],
         torch.Size(neighbor_spatial_obs_space.shape),
         neighbor_scalar_obs_space.shape[1],
+        use_neighbors
     )
     p_net = PolicyNet(
         torch.Size(spatial_obs_space.shape),
@@ -384,6 +497,7 @@ if __name__ == "__main__":
         int(act_space.n),
         torch.Size(neighbor_spatial_obs_space.shape),
         neighbor_scalar_obs_space.shape[1],
+        use_neighbors
     )
     if args.resume:
         p_net.load_state_dict(torch.load("temp/p_net_retrieval.pt"))

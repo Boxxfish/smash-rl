@@ -242,7 +242,7 @@ if __name__ == "__main__":
                     torch.from_numpy(np.stack(keys_stats)),
                 ).numpy()
             outputs = pca.transform(outputs) # Shape: (batch_size, key_dim)
-            outputs = outputs / np.sqrt(outputs**2).sum(1, keepdims=True)
+            outputs = outputs / np.sqrt((outputs**2).sum(1, keepdims=True))
             return outputs
 
         # Allocate key and data arrays

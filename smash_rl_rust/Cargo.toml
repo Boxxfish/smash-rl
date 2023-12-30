@@ -30,7 +30,7 @@ opt-level=3
 [dependencies]
 pyo3 = "0.18.3"
 rand = "0.8.5"
-bevy = { version = "0.10.0", features = ["wayland"] }
+bevy = { version = "0.10.1", features = ["wayland"] }
 bevy_rapier2d = { version = "0.21.0", features = ["simd-nightly", "debug-render-2d"] }
 bevy_save = "0.8.0"
 rmp-serde = "1.1.1"
@@ -47,3 +47,4 @@ ndarray = "0.15.0"
 libc = "0.2.0"
 image = "0.24.7"
 indicatif = "0.17.7"
+packed_simd = "0.3.9"
